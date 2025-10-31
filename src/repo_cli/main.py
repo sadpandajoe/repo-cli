@@ -1,7 +1,7 @@
 """Main CLI entry point for repo-cli."""
 
 import typer
-from typing_extensions import Annotated
+from typing import Annotated
 
 app = typer.Typer(
     name="repo",

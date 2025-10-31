@@ -6,6 +6,7 @@ Provides high-level interfaces for git commands:
 - Initialize submodules
 """
 
+import subprocess
 from pathlib import Path
 
 
@@ -16,8 +17,12 @@ def clone_bare(url: str, target_path: Path) -> None:
         url: Git repository URL
         target_path: Path where to create the bare repository
     """
-    # TODO: Implement git clone --bare
-    raise NotImplementedError("clone_bare not yet implemented")
+    subprocess.run(
+        ["git", "clone", "--bare", url, str(target_path)],
+        check=True,
+        capture_output=True,
+        text=True
+    )
 
 
 def create_worktree(
@@ -31,8 +36,12 @@ def create_worktree(
         branch: Name of the branch to create
         start_point: Starting point (branch, tag, or commit)
     """
-    # TODO: Implement git worktree add with start-point
-    raise NotImplementedError("create_worktree not yet implemented")
+    subprocess.run(
+        ["git", "-C", str(repo_path), "worktree", "add", str(worktree_path), "-b", branch, start_point],
+        check=True,
+        capture_output=True,
+        text=True
+    )
 
 
 def remove_worktree(worktree_path: Path) -> None:
@@ -41,8 +50,12 @@ def remove_worktree(worktree_path: Path) -> None:
     Args:
         worktree_path: Path to the worktree to remove
     """
-    # TODO: Implement git worktree remove
-    raise NotImplementedError("remove_worktree not yet implemented")
+    subprocess.run(
+        ["git", "worktree", "remove", str(worktree_path)],
+        check=True,
+        capture_output=True,
+        text=True
+    )
 
 
 def init_submodules(worktree_path: Path) -> int:
@@ -54,6 +67,12 @@ def init_submodules(worktree_path: Path) -> int:
     Returns:
         Number of submodules initialized
     """
-    # TODO: Implement submodule update --init --recursive
-    # TODO: Parse output or check .gitmodules to count
-    raise NotImplementedError("init_submodules not yet implemented")
+    result = subprocess.run(
+        ["git", "-C", str(worktree_path), "submodule", "update", "--init", "--recursive"],
+        check=True,
+        capture_output=True,
+        text=True
+    )
+
+    # Count "Submodule" occurrences in stdout to determine how many were initialized
+    return result.stdout.count("Submodule")
