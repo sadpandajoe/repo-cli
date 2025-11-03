@@ -1,8 +1,8 @@
 """Tests for gh_ops module."""
 
-import pytest
-from unittest.mock import patch, MagicMock
-from repo_cli.gh_ops import is_gh_available, get_pr_status, validate_pr_exists
+from unittest.mock import MagicMock, patch
+
+from repo_cli.gh_ops import get_pr_status, is_gh_available, validate_pr_exists
 
 
 class TestIsGhAvailable:
@@ -32,10 +32,7 @@ class TestGetPrStatus:
     def test_get_pr_status_success(self, mock_is_available, mock_run):
         """Should return PR status when gh CLI works."""
         mock_is_available.return_value = True
-        mock_run.return_value = MagicMock(
-            returncode=0,
-            stdout='{"state":"OPEN"}\n'
-        )
+        mock_run.return_value = MagicMock(returncode=0, stdout='{"state":"OPEN"}\n')
 
         status = get_pr_status(4567, "owner/repo")
 
@@ -44,7 +41,7 @@ class TestGetPrStatus:
             ["gh", "pr", "view", "4567", "--repo", "owner/repo", "--json", "state"],
             capture_output=True,
             text=True,
-            check=False
+            check=False,
         )
 
     @patch("repo_cli.gh_ops.subprocess.run")
@@ -52,10 +49,7 @@ class TestGetPrStatus:
     def test_get_pr_status_merged(self, mock_is_available, mock_run):
         """Should return Merged status."""
         mock_is_available.return_value = True
-        mock_run.return_value = MagicMock(
-            returncode=0,
-            stdout='{"state":"MERGED"}\n'
-        )
+        mock_run.return_value = MagicMock(returncode=0, stdout='{"state":"MERGED"}\n')
 
         status = get_pr_status(123, "owner/repo")
 
@@ -66,10 +60,7 @@ class TestGetPrStatus:
     def test_get_pr_status_closed(self, mock_is_available, mock_run):
         """Should return Closed status."""
         mock_is_available.return_value = True
-        mock_run.return_value = MagicMock(
-            returncode=0,
-            stdout='{"state":"CLOSED"}\n'
-        )
+        mock_run.return_value = MagicMock(returncode=0, stdout='{"state":"CLOSED"}\n')
 
         status = get_pr_status(456, "owner/repo")
 

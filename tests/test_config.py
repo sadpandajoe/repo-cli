@@ -1,8 +1,8 @@
 """Tests for config module."""
 
 import pytest
-from pathlib import Path
-from repo_cli.config import parse_github_url, load_config, save_config, get_config_path
+
+from repo_cli.config import load_config, parse_github_url, save_config
 
 
 class TestParseGitHubUrl:
@@ -76,16 +76,12 @@ class TestConfigLoadSave:
             "repos": {
                 "preset": {
                     "url": "git@github.com:preset-io/preset.git",
-                    "owner_repo": "preset-io/preset"
+                    "owner_repo": "preset-io/preset",
                 }
             },
             "worktrees": {
-                "preset-feature-123": {
-                    "repo": "preset",
-                    "branch": "feature-123",
-                    "pr": 4567
-                }
-            }
+                "preset-feature-123": {"repo": "preset", "branch": "feature-123", "pr": 4567}
+            },
         }
 
         save_config(original_config)
@@ -112,12 +108,9 @@ class TestConfigLoadSave:
                 "test": {
                     "url": "https://github.com/test/repo.git",
                     "owner_repo": "test/repo",
-                    "metadata": {
-                        "tags": ["python", "cli"],
-                        "stars": 100
-                    }
+                    "metadata": {"tags": ["python", "cli"], "stars": 100},
                 }
-            }
+            },
         }
 
         save_config(config)

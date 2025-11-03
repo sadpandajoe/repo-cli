@@ -12,6 +12,7 @@ from pathlib import Path
 
 class GitOperationError(Exception):
     """Base exception for git operation failures."""
+
     pass
 
 
@@ -30,11 +31,11 @@ def clone_bare(url: str, target_path: Path) -> None:
             ["git", "clone", "--bare", url, str(target_path)],
             check=True,
             capture_output=True,
-            text=True
+            text=True,
         )
     except subprocess.CalledProcessError as e:
         stderr = e.stderr.strip() if e.stderr else "Unknown error"
-        raise GitOperationError(f"Failed to clone repository: {stderr}")
+        raise GitOperationError(f"Failed to clone repository: {stderr}") from e
 
 
 def create_worktree(
@@ -53,14 +54,24 @@ def create_worktree(
     """
     try:
         subprocess.run(
-            ["git", "-C", str(repo_path), "worktree", "add", str(worktree_path), "-b", branch, start_point],
+            [
+                "git",
+                "-C",
+                str(repo_path),
+                "worktree",
+                "add",
+                str(worktree_path),
+                "-b",
+                branch,
+                start_point,
+            ],
             check=True,
             capture_output=True,
-            text=True
+            text=True,
         )
     except subprocess.CalledProcessError as e:
         stderr = e.stderr.strip() if e.stderr else "Unknown error"
-        raise GitOperationError(f"Failed to create worktree: {stderr}")
+        raise GitOperationError(f"Failed to create worktree: {stderr}") from e
 
 
 def remove_worktree(repo_path: Path, worktree_path: Path) -> None:
@@ -78,11 +89,11 @@ def remove_worktree(repo_path: Path, worktree_path: Path) -> None:
             ["git", "-C", str(repo_path), "worktree", "remove", str(worktree_path)],
             check=True,
             capture_output=True,
-            text=True
+            text=True,
         )
     except subprocess.CalledProcessError as e:
         stderr = e.stderr.strip() if e.stderr else "Unknown error"
-        raise GitOperationError(f"Failed to remove worktree: {stderr}")
+        raise GitOperationError(f"Failed to remove worktree: {stderr}") from e
 
 
 def init_submodules(worktree_path: Path) -> int:
@@ -108,11 +119,11 @@ def init_submodules(worktree_path: Path) -> int:
             ["git", "-C", str(worktree_path), "submodule", "update", "--init", "--recursive"],
             check=True,
             capture_output=True,
-            text=True
+            text=True,
         )
     except subprocess.CalledProcessError as e:
         stderr = e.stderr.strip() if e.stderr else "Unknown error"
-        raise GitOperationError(f"Failed to initialize submodules: {stderr}")
+        raise GitOperationError(f"Failed to initialize submodules: {stderr}") from e
 
     # Count submodules by parsing .gitmodules for [submodule sections
     try:

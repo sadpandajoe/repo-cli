@@ -1,10 +1,18 @@
 """Tests for git_ops module."""
 
-import pytest
-from unittest.mock import patch, call, MagicMock
-from pathlib import Path
 import subprocess
-from repo_cli.git_ops import clone_bare, create_worktree, remove_worktree, init_submodules, GitOperationError
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from repo_cli.git_ops import (
+    GitOperationError,
+    clone_bare,
+    create_worktree,
+    init_submodules,
+    remove_worktree,
+)
 
 
 class TestCloneBare:
@@ -24,7 +32,7 @@ class TestCloneBare:
             ["git", "clone", "--bare", url, str(target_path)],
             check=True,
             capture_output=True,
-            text=True
+            text=True,
         )
 
     @patch("repo_cli.git_ops.subprocess.run")
@@ -53,10 +61,20 @@ class TestCreateWorktree:
         create_worktree(repo_path, worktree_path, branch)
 
         mock_run.assert_called_once_with(
-            ["git", "-C", str(repo_path), "worktree", "add", str(worktree_path), "-b", branch, "origin/HEAD"],
+            [
+                "git",
+                "-C",
+                str(repo_path),
+                "worktree",
+                "add",
+                str(worktree_path),
+                "-b",
+                branch,
+                "origin/HEAD",
+            ],
             check=True,
             capture_output=True,
-            text=True
+            text=True,
         )
 
     @patch("repo_cli.git_ops.subprocess.run")
@@ -72,10 +90,20 @@ class TestCreateWorktree:
         create_worktree(repo_path, worktree_path, branch, start_point)
 
         mock_run.assert_called_once_with(
-            ["git", "-C", str(repo_path), "worktree", "add", str(worktree_path), "-b", branch, start_point],
+            [
+                "git",
+                "-C",
+                str(repo_path),
+                "worktree",
+                "add",
+                str(worktree_path),
+                "-b",
+                branch,
+                start_point,
+            ],
             check=True,
             capture_output=True,
-            text=True
+            text=True,
         )
 
 
@@ -96,7 +124,7 @@ class TestRemoveWorktree:
             ["git", "-C", str(repo_path), "worktree", "remove", str(worktree_path)],
             check=True,
             capture_output=True,
-            text=True
+            text=True,
         )
 
 
@@ -130,7 +158,7 @@ class TestInitSubmodules:
             ["git", "-C", str(worktree_path), "submodule", "update", "--init", "--recursive"],
             check=True,
             capture_output=True,
-            text=True
+            text=True,
         )
 
     def test_init_submodules_with_no_gitmodules(self, tmp_path):

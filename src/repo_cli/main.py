@@ -1,14 +1,14 @@
 """Main CLI entry point for repo-cli."""
 
 import sys
-import typer
-from typing import Annotated
-from pathlib import Path
 from datetime import datetime
+from typing import Annotated
+
+import typer
 from rich.console import Console
 from rich.table import Table
 
-from repo_cli import config, git_ops, gh_ops, utils
+from repo_cli import config, gh_ops, git_ops, utils
 
 app = typer.Typer(
     name="repo",
@@ -20,12 +20,8 @@ console = Console()
 
 @app.command()
 def init(
-    base_dir: Annotated[
-        str, typer.Option(help="Base directory for repositories")
-    ] = "~/code",
-    force: Annotated[
-        bool, typer.Option("--force", help="Overwrite existing config")
-    ] = False,
+    base_dir: Annotated[str, typer.Option(help="Base directory for repositories")] = "~/code",
+    force: Annotated[bool, typer.Option("--force", help="Overwrite existing config")] = False,
 ):
     """Initialize the CLI environment."""
     try:
@@ -34,7 +30,10 @@ def init(
         # Check if config already exists
         if config_path.exists() and not force:
             console.print(f"✗ Error: Config already exists at {config_path}", style="red")
-            console.print("ℹ Use --force to overwrite existing config (this will delete all repos and worktrees)", style="yellow")
+            console.print(
+                "ℹ Use --force to overwrite existing config (this will delete all repos and worktrees)",
+                style="yellow",
+            )
             sys.exit(1)
 
         # Expand path
@@ -44,11 +43,7 @@ def init(
         base_path.mkdir(parents=True, exist_ok=True)
 
         # Create config
-        initial_config = {
-            "base_dir": base_dir,
-            "repos": {},
-            "worktrees": {}
-        }
+        initial_config = {"base_dir": base_dir, "repos": {}, "worktrees": {}}
         config.save_config(initial_config)
 
         if force:
@@ -78,10 +73,7 @@ def register(alias: str, url: str):
         if "repos" not in cfg:
             cfg["repos"] = {}
 
-        cfg["repos"][alias] = {
-            "url": url,
-            "owner_repo": owner_repo
-        }
+        cfg["repos"][alias] = {"url": url, "owner_repo": owner_repo}
 
         # Save config
         config.save_config(cfg)
@@ -128,10 +120,7 @@ def create(
                 owner_repo = config.parse_github_url(url)
                 if "repos" not in cfg:
                     cfg["repos"] = {}
-                cfg["repos"][repo] = {
-                    "url": url,
-                    "owner_repo": owner_repo
-                }
+                cfg["repos"][repo] = {"url": url, "owner_repo": owner_repo}
                 config.save_config(cfg)
                 console.print(f"✓ Registered '{repo}' → {url}", style="green")
             except ValueError as e:
@@ -168,14 +157,16 @@ def create(
         console.print(f"✓ Created worktree: {str(worktree_path)}", style="green")
         console.print(f"✓ Branch: {branch} (new, from {start_point})", style="green")
 
-        # Initialize submodules
-        try:
-            console.print("✓ Initializing submodules...", style="cyan")
-            submodule_count = git_ops.init_submodules(worktree_path)
-            if submodule_count > 0:
-                console.print(f"✓ Initialized {submodule_count} submodules", style="green")
-        except git_ops.GitOperationError as e:
-            console.print(f"⚠ Warning: {e}", style="yellow")
+        # Initialize submodules (only if .gitmodules exists)
+        gitmodules_path = worktree_path / ".gitmodules"
+        if gitmodules_path.exists():
+            try:
+                console.print("✓ Initializing submodules...", style="cyan")
+                submodule_count = git_ops.init_submodules(worktree_path)
+                if submodule_count > 0:
+                    console.print(f"✓ Initialized {submodule_count} submodules", style="green")
+            except git_ops.GitOperationError as e:
+                console.print(f"⚠ Warning: {e}", style="yellow")
 
         # Save worktree metadata
         worktree_key = f"{repo}-{branch}"
@@ -186,7 +177,7 @@ def create(
             "branch": branch,
             "pr": None,
             "start_point": start_point,
-            "created_at": datetime.now().isoformat()
+            "created_at": datetime.now().isoformat(),
         }
         config.save_config(cfg)
 
@@ -210,7 +201,9 @@ def list(repo: Annotated[str | None, typer.Argument()] = None):
         repos = cfg.get("repos", {})
 
         if not worktrees:
-            console.print("No worktrees found. Create one with 'repo create <repo> <branch>'", style="yellow")
+            console.print(
+                "No worktrees found. Create one with 'repo create <repo> <branch>'", style="yellow"
+            )
             return
 
         # Create rich table
@@ -221,7 +214,8 @@ def list(repo: Annotated[str | None, typer.Argument()] = None):
         table.add_column("Status")
 
         # Add rows
-        for wt_key, wt_info in worktrees.items():
+        rows_added = 0
+        for _wt_key, wt_info in worktrees.items():
             wt_repo = wt_info["repo"]
 
             # Filter by repo if specified
@@ -246,8 +240,13 @@ def list(repo: Annotated[str | None, typer.Argument()] = None):
                 status_display = "-"
 
             table.add_row(wt_repo, wt_branch, pr_display, status_display)
+            rows_added += 1
 
-        console.print(table)
+        # Show table or helpful message if filtered and empty
+        if rows_added == 0 and repo:
+            console.print(f"No worktrees found for '{repo}'", style="yellow")
+        elif rows_added > 0:
+            console.print(table)
 
     except Exception as e:
         console.print(f"✗ Error: {e}", style="red")
@@ -336,7 +335,9 @@ def pr_link(repo: str, branch: str, pr_number: int):
         if owner_repo and gh_ops.is_gh_available():
             if gh_ops.validate_pr_exists(pr_number, owner_repo):
                 status = gh_ops.get_pr_status(pr_number, owner_repo)
-                console.print(f"✓ Validated PR #{pr_number} ({status}) in {owner_repo}", style="green")
+                console.print(
+                    f"✓ Validated PR #{pr_number} ({status}) in {owner_repo}", style="green"
+                )
             else:
                 console.print(f"⚠ Warning: Could not validate PR #{pr_number}", style="yellow")
 

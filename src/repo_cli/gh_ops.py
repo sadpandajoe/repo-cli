@@ -32,7 +32,7 @@ def get_pr_status(pr_number: int, owner_repo: str) -> str | None:
             ["gh", "pr", "view", str(pr_number), "--repo", owner_repo, "--json", "state"],
             capture_output=True,
             text=True,
-            check=False
+            check=False,
         )
 
         if result.returncode != 0:
@@ -42,11 +42,7 @@ def get_pr_status(pr_number: int, owner_repo: str) -> str | None:
         state = data.get("state", "").upper()
 
         # Map GitHub states to user-friendly strings
-        state_map = {
-            "OPEN": "Open",
-            "CLOSED": "Closed",
-            "MERGED": "Merged"
-        }
+        state_map = {"OPEN": "Open", "CLOSED": "Closed", "MERGED": "Merged"}
 
         return state_map.get(state)
 
@@ -72,7 +68,7 @@ def validate_pr_exists(pr_number: int, owner_repo: str) -> bool:
             ["gh", "pr", "view", str(pr_number), "--repo", owner_repo],
             capture_output=True,
             text=True,
-            check=False
+            check=False,
         )
 
         return result.returncode == 0
