@@ -1,29 +1,95 @@
 """Main CLI entry point for repo-cli."""
 
+import sys
+from datetime import datetime
+from typing import Annotated
+
 import typer
-from typing_extensions import Annotated
+from rich.console import Console
+from rich.table import Table
+
+from repo_cli import config, gh_ops, git_ops, utils
 
 app = typer.Typer(
     name="repo",
     help="A lightweight CLI tool for managing git worktrees with PR tracking",
     no_args_is_help=True,
 )
+console = Console()
 
 
 @app.command()
 def init(
-    base_dir: Annotated[
-        str, typer.Option(help="Base directory for repositories")
-    ] = "~/code",
+    base_dir: Annotated[str, typer.Option(help="Base directory for repositories")] = "~/code",
+    force: Annotated[bool, typer.Option("--force", help="Overwrite existing config")] = False,
 ):
     """Initialize the CLI environment."""
-    typer.echo("🚧 repo init - Coming soon")
+    try:
+        config_path = config.get_config_path()
+
+        # Check if config already exists
+        if config_path.exists() and not force:
+            console.print(f"✗ Error: Config already exists at {config_path}", style="red")
+            console.print(
+                "ℹ Use --force to overwrite existing config (this will delete all repos and worktrees)",
+                style="yellow",
+            )
+            sys.exit(1)
+
+        # Expand path
+        base_path = utils.expand_path(base_dir)
+
+        # Create base directory
+        base_path.mkdir(parents=True, exist_ok=True)
+
+        # Create config
+        initial_config = {"base_dir": base_dir, "repos": {}, "worktrees": {}}
+        config.save_config(initial_config)
+
+        if force:
+            console.print(f"✓ Overwrote config at {config_path}", style="green")
+        else:
+            console.print(f"✓ Created config at {config_path}", style="green")
+        console.print(f"✓ Created base directory: {base_dir}", style="green")
+        console.print("ℹ Run 'repo --install-completion' to enable auto-complete", style="blue")
+        console.print("ℹ Run 'repo create <name> <branch>' to get started", style="blue")
+
+    except Exception as e:
+        console.print(f"✗ Error: {e}", style="red")
+        sys.exit(1)
 
 
 @app.command()
 def register(alias: str, url: str):
     """Register a repository alias for easy reference."""
-    typer.echo("🚧 repo register - Coming soon")
+    try:
+        # Parse GitHub URL to extract owner/repo
+        owner_repo = config.parse_github_url(url)
+
+        # Load config
+        cfg = config.load_config()
+
+        # Add repo
+        if "repos" not in cfg:
+            cfg["repos"] = {}
+
+        cfg["repos"][alias] = {"url": url, "owner_repo": owner_repo}
+
+        # Save config
+        config.save_config(cfg)
+
+        console.print(f"✓ Registered '{alias}' → {url}", style="green")
+        console.print(f"✓ GitHub repo: {owner_repo}", style="green")
+
+    except ValueError as e:
+        console.print(f"✗ Error: {e}", style="red")
+        sys.exit(1)
+    except FileNotFoundError:
+        console.print("✗ Error: Config not found. Run 'repo init' first", style="red")
+        sys.exit(1)
+    except Exception as e:
+        console.print(f"✗ Error: {e}", style="red")
+        sys.exit(1)
 
 
 @app.command()
@@ -35,13 +101,156 @@ def create(
     ] = None,
 ):
     """Create a new worktree for a branch."""
-    typer.echo("🚧 repo create - Coming soon")
+    try:
+        # Load config
+        try:
+            cfg = config.load_config()
+        except FileNotFoundError:
+            console.print("✗ Error: Config not found. Run 'repo init' first", style="red")
+            sys.exit(1)
+
+        base_dir = utils.expand_path(cfg["base_dir"])
+
+        # Check if repo exists in config, if not prompt for URL (lazy registration)
+        if repo not in cfg.get("repos", {}):
+            console.print(f"Repository '{repo}' not registered.", style="yellow")
+            url = typer.prompt("Enter repository URL")
+
+            try:
+                owner_repo = config.parse_github_url(url)
+                if "repos" not in cfg:
+                    cfg["repos"] = {}
+                cfg["repos"][repo] = {"url": url, "owner_repo": owner_repo}
+                config.save_config(cfg)
+                console.print(f"✓ Registered '{repo}' → {url}", style="green")
+            except ValueError as e:
+                console.print(f"✗ Error: {e}", style="red")
+                sys.exit(1)
+
+        repo_info = cfg["repos"][repo]
+        repo_url = repo_info["url"]
+
+        # Paths
+        bare_repo_path = utils.get_bare_repo_path(base_dir, repo)
+        worktree_path = utils.get_worktree_path(base_dir, repo, branch)
+
+        # Clone bare repo if it doesn't exist
+        if not bare_repo_path.exists():
+            console.print(f"✓ Cloning {repo} as bare repository...", style="cyan")
+            try:
+                git_ops.clone_bare(repo_url, bare_repo_path)
+            except git_ops.GitOperationError as e:
+                console.print(f"✗ {e}", style="red")
+                sys.exit(1)
+
+        # Determine start point
+        start_point = from_ref if from_ref else "origin/HEAD"
+
+        # Create worktree
+        console.print(f"✓ Creating worktree: {str(worktree_path)}", style="cyan")
+        try:
+            git_ops.create_worktree(bare_repo_path, worktree_path, branch, start_point)
+        except git_ops.GitOperationError as e:
+            console.print(f"✗ {e}", style="red")
+            sys.exit(1)
+
+        console.print(f"✓ Created worktree: {str(worktree_path)}", style="green")
+        console.print(f"✓ Branch: {branch} (new, from {start_point})", style="green")
+
+        # Initialize submodules (only if .gitmodules exists)
+        gitmodules_path = worktree_path / ".gitmodules"
+        if gitmodules_path.exists():
+            try:
+                console.print("✓ Initializing submodules...", style="cyan")
+                submodule_count = git_ops.init_submodules(worktree_path)
+                if submodule_count > 0:
+                    console.print(f"✓ Initialized {submodule_count} submodules", style="green")
+            except git_ops.GitOperationError as e:
+                console.print(f"⚠ Warning: {e}", style="yellow")
+
+        # Save worktree metadata
+        worktree_key = f"{repo}-{branch}"
+        if "worktrees" not in cfg:
+            cfg["worktrees"] = {}
+        cfg["worktrees"][worktree_key] = {
+            "repo": repo,
+            "branch": branch,
+            "pr": None,
+            "start_point": start_point,
+            "created_at": datetime.now().isoformat(),
+        }
+        config.save_config(cfg)
+
+    except Exception as e:
+        console.print(f"✗ Error: {e}", style="red")
+        sys.exit(1)
 
 
 @app.command()
 def list(repo: Annotated[str | None, typer.Argument()] = None):
     """Display all worktrees with PR status."""
-    typer.echo("🚧 repo list - Coming soon")
+    try:
+        # Load config
+        try:
+            cfg = config.load_config()
+        except FileNotFoundError:
+            console.print("✗ Error: Config not found. Run 'repo init' first", style="red")
+            sys.exit(1)
+
+        worktrees = cfg.get("worktrees", {})
+        repos = cfg.get("repos", {})
+
+        if not worktrees:
+            console.print(
+                "No worktrees found. Create one with 'repo create <repo> <branch>'", style="yellow"
+            )
+            return
+
+        # Create rich table
+        table = Table(show_header=True, header_style="bold magenta")
+        table.add_column("Repo")
+        table.add_column("Branch")
+        table.add_column("PR")
+        table.add_column("Status")
+
+        # Add rows
+        rows_added = 0
+        for _wt_key, wt_info in worktrees.items():
+            wt_repo = wt_info["repo"]
+
+            # Filter by repo if specified
+            if repo and wt_repo != repo:
+                continue
+
+            wt_branch = wt_info["branch"]
+            pr_num = wt_info.get("pr")
+
+            if pr_num:
+                # Get PR status
+                owner_repo = repos.get(wt_repo, {}).get("owner_repo")
+                if owner_repo:
+                    status = gh_ops.get_pr_status(pr_num, owner_repo)
+                    pr_display = f"#{pr_num}"
+                    status_display = status if status else "-"
+                else:
+                    pr_display = f"#{pr_num}"
+                    status_display = "-"
+            else:
+                pr_display = "-"
+                status_display = "-"
+
+            table.add_row(wt_repo, wt_branch, pr_display, status_display)
+            rows_added += 1
+
+        # Show table or helpful message if filtered and empty
+        if rows_added == 0 and repo:
+            console.print(f"No worktrees found for '{repo}'", style="yellow")
+        elif rows_added > 0:
+            console.print(table)
+
+    except Exception as e:
+        console.print(f"✗ Error: {e}", style="red")
+        sys.exit(1)
 
 
 @app.command()
@@ -51,7 +260,49 @@ def delete(
     force: Annotated[bool, typer.Option("--force", help="Skip confirmation")] = False,
 ):
     """Remove a worktree."""
-    typer.echo("🚧 repo delete - Coming soon")
+    try:
+        # Load config
+        try:
+            cfg = config.load_config()
+        except FileNotFoundError:
+            console.print("✗ Error: Config not found. Run 'repo init' first", style="red")
+            sys.exit(1)
+
+        base_dir = utils.expand_path(cfg["base_dir"])
+        worktree_key = f"{repo}-{branch}"
+
+        # Check if worktree exists in config
+        if worktree_key not in cfg.get("worktrees", {}):
+            console.print(f"✗ Error: Worktree '{worktree_key}' not found in config", style="red")
+            sys.exit(1)
+
+        # Confirm deletion unless --force
+        if not force:
+            confirm = typer.confirm(f"⚠ Delete worktree '{worktree_key}'?")
+            if not confirm:
+                console.print("Cancelled", style="yellow")
+                return
+
+        # Paths
+        bare_repo_path = utils.get_bare_repo_path(base_dir, repo)
+        worktree_path = utils.get_worktree_path(base_dir, repo, branch)
+
+        # Remove worktree
+        try:
+            git_ops.remove_worktree(bare_repo_path, worktree_path)
+        except git_ops.GitOperationError as e:
+            console.print(f"✗ {e}", style="red")
+            sys.exit(1)
+
+        # Remove from config
+        del cfg["worktrees"][worktree_key]
+        config.save_config(cfg)
+
+        console.print(f"✓ Removed worktree: {str(worktree_path)}", style="green")
+
+    except Exception as e:
+        console.print(f"✗ Error: {e}", style="red")
+        sys.exit(1)
 
 
 # PR subcommand group
@@ -62,7 +313,43 @@ app.add_typer(pr_app, name="pr")
 @pr_app.command("link")
 def pr_link(repo: str, branch: str, pr_number: int):
     """Link a PR to a worktree."""
-    typer.echo("🚧 repo pr link - Coming soon")
+    try:
+        # Load config
+        try:
+            cfg = config.load_config()
+        except FileNotFoundError:
+            console.print("✗ Error: Config not found. Run 'repo init' first", style="red")
+            sys.exit(1)
+
+        worktree_key = f"{repo}-{branch}"
+
+        # Check if worktree exists
+        if worktree_key not in cfg.get("worktrees", {}):
+            console.print(f"✗ Error: Worktree '{worktree_key}' not found", style="red")
+            sys.exit(1)
+
+        # Get owner/repo for validation
+        owner_repo = cfg.get("repos", {}).get(repo, {}).get("owner_repo")
+
+        # Optionally validate PR exists
+        if owner_repo and gh_ops.is_gh_available():
+            if gh_ops.validate_pr_exists(pr_number, owner_repo):
+                status = gh_ops.get_pr_status(pr_number, owner_repo)
+                console.print(
+                    f"✓ Validated PR #{pr_number} ({status}) in {owner_repo}", style="green"
+                )
+            else:
+                console.print(f"⚠ Warning: Could not validate PR #{pr_number}", style="yellow")
+
+        # Link PR
+        cfg["worktrees"][worktree_key]["pr"] = pr_number
+        config.save_config(cfg)
+
+        console.print(f"✓ Linked PR #{pr_number} to {worktree_key}", style="green")
+
+    except Exception as e:
+        console.print(f"✗ Error: {e}", style="red")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Test on Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+
+      - name: Install dependencies
+        run: uv sync --dev
+
+      - name: Run ruff linter
+        run: uv run ruff check src/ tests/
+
+      - name: Run ruff formatter check
+        run: uv run ruff format --check src/ tests/
+
+      - name: Run tests
+        run: uv run pytest tests/ -v --cov=src/repo_cli --cov-report=term-missing
+
+      - name: Verify package builds
+        run: |
+          uv pip install build
+          uv run python -m build
