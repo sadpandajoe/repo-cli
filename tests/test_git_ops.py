@@ -3,7 +3,8 @@
 import pytest
 from unittest.mock import patch, call, MagicMock
 from pathlib import Path
-from repo_cli.git_ops import clone_bare, create_worktree, remove_worktree, init_submodules
+import subprocess
+from repo_cli.git_ops import clone_bare, create_worktree, remove_worktree, init_submodules, GitOperationError
 
 
 class TestCloneBare:
@@ -28,10 +29,12 @@ class TestCloneBare:
 
     @patch("repo_cli.git_ops.subprocess.run")
     def test_clone_bare_command_failure(self, mock_run):
-        """Should raise exception on git command failure."""
-        mock_run.side_effect = Exception("git clone failed")
+        """Should raise GitOperationError on git command failure."""
+        mock_run.side_effect = subprocess.CalledProcessError(
+            1, ["git", "clone"], stderr="fatal: repository not found"
+        )
 
-        with pytest.raises(Exception):
+        with pytest.raises(GitOperationError, match="Failed to clone repository"):
             clone_bare("invalid-url", Path("/tmp/test"))
 
 
@@ -81,15 +84,16 @@ class TestRemoveWorktree:
 
     @patch("repo_cli.git_ops.subprocess.run")
     def test_remove_worktree_success(self, mock_run):
-        """Should run git worktree remove command."""
+        """Should run git worktree remove command with repo context."""
         mock_run.return_value = MagicMock(returncode=0)
 
+        repo_path = Path("/tmp/test/repo.git")
         worktree_path = Path("/tmp/test/repo-branch")
 
-        remove_worktree(worktree_path)
+        remove_worktree(repo_path, worktree_path)
 
         mock_run.assert_called_once_with(
-            ["git", "worktree", "remove", str(worktree_path)],
+            ["git", "-C", str(repo_path), "worktree", "remove", str(worktree_path)],
             check=True,
             capture_output=True,
             text=True
@@ -100,15 +104,24 @@ class TestInitSubmodules:
     """Tests for init_submodules function."""
 
     @patch("repo_cli.git_ops.subprocess.run")
-    def test_init_submodules_with_submodules_present(self, mock_run):
-        """Should initialize submodules and return count."""
-        # Mock subprocess to return output indicating 3 submodules
-        mock_run.return_value = MagicMock(
-            returncode=0,
-            stdout="Submodule 'sub1' registered\nSubmodule 'sub2' registered\nSubmodule 'sub3' registered\n"
-        )
+    def test_init_submodules_with_submodules_present(self, mock_run, tmp_path):
+        """Should initialize submodules and return count from .gitmodules."""
+        mock_run.return_value = MagicMock(returncode=0)
 
-        worktree_path = Path("/tmp/test/repo-branch")
+        # Create a mock .gitmodules file with 3 submodules
+        worktree_path = tmp_path / "repo-branch"
+        worktree_path.mkdir()
+        gitmodules = worktree_path / ".gitmodules"
+        gitmodules.write_text("""[submodule "sub1"]
+    path = sub1
+    url = https://github.com/owner/sub1.git
+[submodule "sub2"]
+    path = sub2
+    url = https://github.com/owner/sub2.git
+[submodule "sub3"]
+    path = sub3
+    url = https://github.com/owner/sub3.git
+""")
 
         count = init_submodules(worktree_path)
 
@@ -120,12 +133,10 @@ class TestInitSubmodules:
             text=True
         )
 
-    @patch("repo_cli.git_ops.subprocess.run")
-    def test_init_submodules_with_no_submodules(self, mock_run):
-        """Should return 0 when no submodules present."""
-        mock_run.return_value = MagicMock(returncode=0, stdout="")
-
-        worktree_path = Path("/tmp/test/repo-branch")
+    def test_init_submodules_with_no_gitmodules(self, tmp_path):
+        """Should return 0 when .gitmodules doesn't exist."""
+        worktree_path = tmp_path / "repo-branch"
+        worktree_path.mkdir()
 
         count = init_submodules(worktree_path)
 

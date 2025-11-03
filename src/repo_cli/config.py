@@ -23,13 +23,23 @@ def load_config() -> dict[str, Any]:
 
     Raises:
         FileNotFoundError: If config file doesn't exist
+        ValueError: If config file is empty or invalid
     """
     config_path = get_config_path()
     if not config_path.exists():
         raise FileNotFoundError(f"Config file not found: {config_path}")
 
     with open(config_path, "r") as f:
-        return yaml.safe_load(f)
+        data = yaml.safe_load(f)
+
+        # Guard against empty/blank YAML files
+        if data is None:
+            raise ValueError(f"Config file is empty or invalid: {config_path}")
+
+        if not isinstance(data, dict):
+            raise ValueError(f"Config file must contain a YAML dictionary: {config_path}")
+
+        return data
 
 
 def save_config(config: dict[str, Any]) -> None:

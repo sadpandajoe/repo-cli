@@ -1,7 +1,6 @@
 """Tests for config module."""
 
 import pytest
-import tempfile
 from pathlib import Path
 from repo_cli.config import parse_github_url, load_config, save_config, get_config_path
 

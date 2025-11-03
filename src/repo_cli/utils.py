@@ -7,7 +7,7 @@ from pathlib import Path
 
 
 def expand_path(path: str) -> Path:
-    """Expand and resolve a path with ~ and environment variables.
+    """Expand and resolve a path with ~ expansion.
 
     Args:
         path: Path string to expand
