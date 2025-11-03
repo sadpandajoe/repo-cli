@@ -158,7 +158,9 @@ class TestCliPrLink:
         with open(config_file) as f:
             cfg = yaml.safe_load(f)
 
-        cfg["repos"] = {"test": {"url": "git@github.com:owner/repo.git", "owner_repo": "owner/repo"}}
+        cfg["repos"] = {
+            "test": {"url": "git@github.com:owner/repo.git", "owner_repo": "owner/repo"}
+        }
         cfg["worktrees"] = {
             "test-feature": {
                 "repo": "test",
