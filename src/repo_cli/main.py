@@ -18,6 +18,38 @@ app = typer.Typer(
 console = Console()
 
 
+# Auto-complete functions
+def complete_repo(incomplete: str = "") -> list[str]:
+    """Auto-complete function for repo aliases."""
+    try:
+        cfg = config.load_config()
+        repos = cfg.get("repos", {}).keys()
+        # Filter by incomplete string
+        return [repo for repo in repos if repo.startswith(incomplete)]
+    except (FileNotFoundError, Exception):
+        # Return empty list if config doesn't exist or has errors
+        return []
+
+
+def complete_branch(incomplete: str = "") -> list[str]:
+    """Auto-complete function for branch names."""
+    try:
+        cfg = config.load_config()
+        worktrees = cfg.get("worktrees", {})
+
+        # Extract all branches (context-aware filtering is complex in Typer)
+        branches = []
+        for wt_info in worktrees.values():
+            branch = wt_info.get("branch")
+            if branch and branch.startswith(incomplete):
+                branches.append(branch)
+
+        return branches
+    except (FileNotFoundError, Exception):
+        # Return empty list if config doesn't exist or has errors
+        return []
+
+
 @app.command()
 def init(
     base_dir: Annotated[str, typer.Option(help="Base directory for repositories")] = "~/code",
@@ -94,7 +126,7 @@ def register(alias: str, url: str):
 
 @app.command()
 def create(
-    repo: str,
+    repo: Annotated[str, typer.Argument(autocompletion=complete_repo)],
     branch: str,
     from_ref: Annotated[
         str | None, typer.Option("--from", help="Start point (branch, tag, or commit)")
@@ -187,7 +219,7 @@ def create(
 
 
 @app.command()
-def list(repo: Annotated[str | None, typer.Argument()] = None):
+def list(repo: Annotated[str | None, typer.Argument(autocompletion=complete_repo)] = None):
     """Display all worktrees with PR status."""
     try:
         # Load config
@@ -255,8 +287,8 @@ def list(repo: Annotated[str | None, typer.Argument()] = None):
 
 @app.command()
 def delete(
-    repo: str,
-    branch: str,
+    repo: Annotated[str, typer.Argument(autocompletion=complete_repo)],
+    branch: Annotated[str, typer.Argument(autocompletion=complete_branch)],
     force: Annotated[bool, typer.Option("--force", help="Skip confirmation")] = False,
 ):
     """Remove a worktree."""
@@ -311,7 +343,11 @@ app.add_typer(pr_app, name="pr")
 
 
 @pr_app.command("link")
-def pr_link(repo: str, branch: str, pr_number: int):
+def pr_link(
+    repo: Annotated[str, typer.Argument(autocompletion=complete_repo)],
+    branch: Annotated[str, typer.Argument(autocompletion=complete_branch)],
+    pr_number: int,
+):
     """Link a PR to a worktree."""
     try:
         # Load config

@@ -4,7 +4,8 @@ from unittest.mock import patch
 
 from typer.testing import CliRunner
 
-from repo_cli.main import app
+from repo_cli import config
+from repo_cli.main import app, complete_branch, complete_repo
 
 runner = CliRunner()
 
@@ -192,3 +193,169 @@ class TestCliPrLink:
 
         assert result.exit_code == 1
         assert "not found" in result.stdout
+
+
+class TestAutoComplete:
+    """Tests for auto-complete functionality."""
+
+    def test_complete_repo_returns_all_repos(self, tmp_path, monkeypatch):
+        """Should return all registered repo aliases."""
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+
+        # Create config with repos
+        cfg = {
+            "base_dir": "~/code",
+            "repos": {
+                "preset": {
+                    "url": "git@github.com:preset-io/preset.git",
+                    "owner_repo": "preset-io/preset",
+                },
+                "superset": {
+                    "url": "git@github.com:apache/superset.git",
+                    "owner_repo": "apache/superset",
+                },
+                "manager": {
+                    "url": "git@github.com:preset-io/manager.git",
+                    "owner_repo": "preset-io/manager",
+                },
+            },
+            "worktrees": {},
+        }
+        config.save_config(cfg)
+
+        # Get completions
+        completions = complete_repo()
+
+        assert completions == ["preset", "superset", "manager"]
+
+    def test_complete_repo_filters_by_incomplete(self, tmp_path, monkeypatch):
+        """Should filter repos by incomplete string."""
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+
+        # Create config with repos
+        cfg = {
+            "base_dir": "~/code",
+            "repos": {
+                "preset": {
+                    "url": "git@github.com:preset-io/preset.git",
+                    "owner_repo": "preset-io/preset",
+                },
+                "preset-manager": {
+                    "url": "git@github.com:preset-io/manager.git",
+                    "owner_repo": "preset-io/manager",
+                },
+                "superset": {
+                    "url": "git@github.com:apache/superset.git",
+                    "owner_repo": "apache/superset",
+                },
+            },
+            "worktrees": {},
+        }
+        config.save_config(cfg)
+
+        # Get completions for "pre"
+        completions = complete_repo(incomplete="pre")
+
+        assert "preset" in completions
+        assert "preset-manager" in completions
+        assert "superset" not in completions
+
+    def test_complete_repo_returns_empty_when_no_config(self, tmp_path, monkeypatch):
+        """Should return empty list when config doesn't exist."""
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+
+        # No config exists
+        completions = complete_repo()
+
+        assert completions == []
+
+    def test_complete_branch_returns_all_branches(self, tmp_path, monkeypatch):
+        """Should return all branch names."""
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+
+        # Create config with worktrees
+        cfg = {
+            "base_dir": "~/code",
+            "repos": {},
+            "worktrees": {
+                "preset-feature-123": {
+                    "repo": "preset",
+                    "branch": "feature-123",
+                    "pr": None,
+                    "start_point": "origin/HEAD",
+                },
+                "preset-bugfix-456": {
+                    "repo": "preset",
+                    "branch": "bugfix-456",
+                    "pr": None,
+                    "start_point": "origin/HEAD",
+                },
+                "superset-main": {
+                    "repo": "superset",
+                    "branch": "main",
+                    "pr": None,
+                    "start_point": "origin/HEAD",
+                },
+            },
+        }
+        config.save_config(cfg)
+
+        # Get completions - returns all branches
+        completions = complete_branch()
+
+        assert "feature-123" in completions
+        assert "bugfix-456" in completions
+        assert "main" in completions
+
+    def test_complete_branch_filters_by_incomplete(self, tmp_path, monkeypatch):
+        """Should filter branches by incomplete string."""
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+
+        # Create config with worktrees
+        cfg = {
+            "base_dir": "~/code",
+            "repos": {},
+            "worktrees": {
+                "preset-feature-123": {
+                    "repo": "preset",
+                    "branch": "feature-123",
+                    "pr": None,
+                    "start_point": "origin/HEAD",
+                },
+                "preset-feature-456": {
+                    "repo": "preset",
+                    "branch": "feature-456",
+                    "pr": None,
+                    "start_point": "origin/HEAD",
+                },
+                "preset-bugfix-789": {
+                    "repo": "preset",
+                    "branch": "bugfix-789",
+                    "pr": None,
+                    "start_point": "origin/HEAD",
+                },
+            },
+        }
+        config.save_config(cfg)
+
+        # Get completions for "feat"
+        completions = complete_branch(incomplete="feat")
+
+        assert "feature-123" in completions
+        assert "feature-456" in completions
+        assert "bugfix-789" not in completions
+
+    def test_complete_branch_returns_empty_when_no_config(self, tmp_path, monkeypatch):
+        """Should return empty list when config doesn't exist."""
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+
+        # No config exists
+        completions = complete_branch()
+
+        assert completions == []
