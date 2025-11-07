@@ -50,12 +50,13 @@ All MVP commands are implemented and tested. Ready for production use.
 
 ### Features
 - ✅ All commands working (init, register, create, list, delete, pr link)
+- ✅ Shell auto-complete for repos and branches
 - ✅ Configuration management with YAML persistence
 - ✅ Git worktree operations via subprocess
 - ✅ GitHub PR status integration (with graceful fallback)
 - ✅ Rich console output (colors, tables, symbols)
 - ✅ Comprehensive error handling (user-friendly messages)
-- ✅ 37 passing tests (28 unit + 9 integration)
+- ✅ 43 passing tests (28 unit + 15 integration)
 - ✅ CI/CD with GitHub Actions
 - ✅ Ruff linting and formatting
 
