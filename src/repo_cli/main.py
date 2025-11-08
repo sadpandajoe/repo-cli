@@ -181,13 +181,18 @@ def create(
         # Create worktree
         console.print(f"✓ Creating worktree: {str(worktree_path)}", style="cyan")
         try:
-            git_ops.create_worktree(bare_repo_path, worktree_path, branch, start_point)
+            _, is_new_branch = git_ops.create_worktree(
+                bare_repo_path, worktree_path, branch, start_point
+            )
         except git_ops.GitOperationError as e:
             console.print(f"✗ {e}", style="red")
             sys.exit(1)
 
         console.print(f"✓ Created worktree: {str(worktree_path)}", style="green")
-        console.print(f"✓ Branch: {branch} (new, from {start_point})", style="green")
+        if is_new_branch:
+            console.print(f"✓ Branch: {branch} (new, from {start_point})", style="green")
+        else:
+            console.print(f"✓ Branch: {branch} (existing)", style="green")
 
         # Initialize submodules (only if .gitmodules exists)
         gitmodules_path = worktree_path / ".gitmodules"

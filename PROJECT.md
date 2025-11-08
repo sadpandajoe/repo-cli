@@ -18,206 +18,19 @@ Build a Python CLI that manages git worktrees using a bare repo + worktree archi
 - Base directory: `~/code/`
 - User manages venv/dependencies manually (for MVP)
 
+## Previous Phases
+
+### Phase 1: Project Scaffolding - Completed 2025-10-30
+Complete package structure with CLI framework, all command stubs, and project setup.
+**PR #1 merged to main.** See PROJECT_ARCHIVE.md for full details.
+
+### Phase 2: Core Infrastructure & MVP Commands - Completed 2025-10-30
+Implemented all MVP commands with TDD approach (37 passing tests), CI/CD pipeline, and comprehensive error handling.
+**PR #2 merged to main.** See PROJECT_ARCHIVE.md for full details.
+
+---
+
 ## Development Log
-
-### 2025-10-30 15:30 - Session Start: MVP Planning
-User clarified scope into clear MVP after initial over-engineering discussion.
-
-**Initial scope creep avoided:**
-- No AI context management (out of scope - users manage their own files)
-- No dependency management in MVP (can add later)
-- No navigation helpers (paths are predictable)
-
-**Architecture decisions finalized:**
-1. **Directory Layout**: Bare repos at `~/code/{repo}.git/`, worktrees at `~/code/{repo}-{branch}/`
-2. **Initial Clone**: Auto-clone as bare when repo doesn't exist
-3. **PR Tracking**: Manual linking via `repo pr link`, store PR# in config, query status live (fallback to PR# only if offline)
-4. **URL Resolution**: `repo register` command + lazy prompt fallback (both explicit and implicit registration)
-5. **Auto-complete**: Included in MVP (Typer built-in support)
-6. **Table display**: Repo | Branch | PR | Status (no Path column - predictable from repo+branch)
-
-### 2025-10-30 16:00 - Planning Complete
-All architectural decisions finalized. Ready to implement.
-
-### 2025-10-30 17:30 - Documentation Fixes: Critical Issues Resolved
-Fixed two critical bugs in the PROJECT.md specification before implementation:
-
-**Issue 1 - Bare-repo worktree creation (High Priority):**
-- **Problem**: `git worktree add ~/code/{repo}-{branch} -b {branch}` would fail on bare repos (no local HEAD to branch from)
-- **Solution**: Use explicit start-point with `-C` flag: `git -C ~/code/{repo}.git worktree add <path> -b <branch> origin/HEAD`
-- **Default behavior**: Use `origin/HEAD` (repo's default branch) as start-point
-- **Flexibility**: Added `--from <start-point>` flag for custom base (tags, commits, branches - useful for hotfixes)
-- **Config tracking**: Store `start_point` field in worktree metadata for reference
-- **Command format**: Shows concrete example with `origin/HEAD`, note explains `--from` override
-
-**Issue 2 - gh pr view repository context (Medium Priority):**
-- **Problem**: `gh pr view <pr#>` can't infer repository context outside of a worktree directory
-- **Initial approach**: Execute from worktree directory - REJECTED (fails if worktree deleted)
-- **Final solution**: Parse and store `owner/repo` slug, use `gh pr view <pr#> --repo <owner_repo> --json state`
-- **URL parsing**: Extract slug during `repo register`:
-  - SSH: `git@github.com:owner/repo.git` → `owner/repo`
-  - HTTPS: `https://github.com/owner/repo.git` → `owner/repo`
-- **Benefit**: PR queries work even if worktree deleted, more reliable and explicit
-- **Config changes**: Store `owner_repo` field for each repo in config
-
-**Files updated:**
-- PROJECT.md sections: `repo register`, `repo create`, `repo list`, `repo pr link` commands
-- Phase 2 infrastructure documentation with explicit implementation requirements
-- Config structure with `owner_repo` and `start_point` fields
-
-### 2025-10-30 18:00 - Submodule Support Added to MVP
-User identified that repositories with submodules need special handling.
-
-**Decision: Automatic submodule initialization (included in MVP)**
-- **Approach**: After creating worktree, automatically run `git -C <worktree_path> submodule update --init --recursive`
-- **Rationale**: Submodules are common in real-world repos; manual initialization creates friction
-- **Behavior**: Always automatic, no flag needed
-- **User feedback**: Display count of initialized submodules (or omit message if none present)
-- **Config tracking**: Not tracked - submodules are git's responsibility, not config concern
-- **Performance note**: May be slow for repos with many/large submodules, but user expectation is that worktree is "ready to use"
-
-**Implementation changes:**
-- Added step 5 to `repo create` workflow: submodule initialization
-- Updated output examples to show submodule initialization messages
-- Enhanced `git_ops.py` implementation notes with submodule workflow
-- No config schema changes needed (not tracked)
-
-### 2025-10-30 19:00 - Phase 1: Project Scaffolding Started
-Starting implementation of package structure following universal guidelines.
-
-**Approach:**
-- Following TDD principles from CLAUDE.implementation.md and CLAUDE.testing.md
-- Creating minimal scaffolding first, then iterating
-- Using uv for package management (modern Python tool)
-- Typer for CLI framework (built-in auto-complete support)
-
-### 2025-10-30 19:30 - Phase 1: Project Scaffolding Complete ✓
-Successfully created complete package scaffolding with working CLI.
-
-**Created:**
-- `pyproject.toml` - Package configuration with dependencies (typer, rich, pyyaml)
-  - Fixed deprecated `tool.uv.dev-dependencies` → `dependency-groups.dev`
-  - No `gh` CLI as dependency (it's external system tool, not Python package)
-- `README.md` - Comprehensive installation and usage guide
-- `src/repo_cli/__init__.py` - Package initialization
-- `src/repo_cli/main.py` - Typer CLI entry point with all commands
-  - Commands: init, register, create, list, delete
-  - Subcommand: pr link
-  - All help text working correctly
-- `src/repo_cli/commands/__init__.py` - Commands package structure
-- `src/repo_cli/config.py` - Config management stubs with URL parsing
-- `src/repo_cli/git_ops.py` - Git operations stubs (clone, worktree, submodules)
-- `src/repo_cli/gh_ops.py` - GitHub CLI operations stubs (PR status)
-- `src/repo_cli/utils.py` - Utility functions (path helpers, validation)
-
-**Verified:**
-- Package installs successfully with `uv pip install -e .`
-- CLI runs: `repo --help` shows all commands
-- All command help text displays correctly
-- Typer auto-complete support included (--install-completion)
-- Stub responses work ("🚧 Coming soon" messages)
-
-**Technical Notes:**
-- GitHub `owner/repo` slug will be parsed from URLs during registration
-- `gh` CLI availability checked at runtime via `shutil.which('gh')`
-- Graceful fallback when `gh` unavailable (show PR# only, no status)
-- All git/gh operations via subprocess (no Python wrappers needed)
-
-### 2025-10-30 20:00 - Phase 2: Core Infrastructure Implementation Complete ✓
-Implemented all core infrastructure modules using TDD (RED → GREEN → REFACTOR).
-
-**Core Modules Implemented:**
-
-**config.py** - Configuration management (11 tests passing)
-- `parse_github_url()` - Extract owner/repo slug from SSH/HTTPS URLs with validation
-- `load_config()` - Load YAML with error handling (guards against None/invalid data)
-- `save_config()` - Save YAML with automatic directory creation
-- Guards against yaml.safe_load returning None or non-dict values
-
-**git_ops.py** - Git subprocess wrappers (7 tests passing)
-- `GitOperationError` exception class for user-friendly error messages
-- `clone_bare()` - Clone repository as bare with error handling
-- `create_worktree()` - Create worktree with configurable start point
-- `remove_worktree()` - Remove worktree (requires repo_path for context)
-- `init_submodules()` - Initialize submodules, count via .gitmodules parsing
-- All functions wrap subprocess calls with CalledProcessError handling
-- Surface git stderr in error messages instead of raw stack traces
-
-**gh_ops.py** - GitHub CLI integration (10 tests passing)
-- `is_gh_available()` - Check gh CLI via shutil.which
-- `get_pr_status()` - Query PR status (Open/Merged/Closed) with --repo flag
-- `validate_pr_exists()` - Validate PR existence
-- Graceful fallback when gh unavailable/offline
-- All PR queries use `--repo owner/repo` flag (works even if worktree deleted)
-
-**main.py** - All MVP commands implemented
-- `repo init` - Create config/directory with --force protection against overwrite
-- `repo register` - Register repo aliases with URL validation
-- `repo create` - Create worktrees with lazy registration, auto-clone, submodule init
-- `repo list` - Display rich table with live PR status
-- `repo delete` - Remove worktrees with confirmation prompt
-- `repo pr link` - Link PRs with validation
-- Rich console output (colors, tables, symbols)
-- User-friendly error messages (no raw exceptions)
-- Path objects converted to strings in output
-
-**Code Review Fixes:**
-- Data loss prevention: `repo init` won't overwrite without `--force`
-- Config validation: Guards against empty/invalid YAML files
-- Git error handling: GitOperationError with actionable messages
-- UX polish: Clean output matching PROJECT.md examples
-- Docstring accuracy: Fixed utils.py expand_path documentation
-
-**Test Coverage:**
-- 37/37 tests passing (28 unit + 9 integration)
-- Unit tests: All core infrastructure with mocked subprocess
-- Integration tests: End-to-end CLI testing with CliRunner
-- Error handling verified with GitOperationError
-- Edge cases covered (empty configs, offline scenarios, invalid URLs, filtered results)
-
-**Technical Decisions:**
-- Used subprocess.run for all git/gh operations (no third-party wrappers)
-- Error handling catches CalledProcessError and raises GitOperationError
-- Config file validated on load (must be dict, not None)
-- Submodule count by parsing .gitmodules (reliable, works when already initialized)
-- remove_worktree requires repo_path parameter for git context
-
-### 2025-10-30 21:00 - CI/CD, Integration Tests, and Final Polish ✓
-Added automated testing infrastructure and final UX improvements.
-
-**CI/CD (GitHub Actions):**
-- Created .github/workflows/ci.yml
-- Tests on Python 3.11 and 3.12 (ubuntu-latest)
-- Runs ruff linter and formatter checks
-- Runs pytest with coverage reporting
-- Verifies package builds successfully
-- Triggers on every push/PR to main
-
-**Ruff Linter:**
-- Added ruff>=0.8.0 to dev dependencies
-- Configured with sensible defaults (line-length 100, py311 target)
-- Auto-formatted entire codebase (imports sorted, style consistent)
-- Fixed all linting issues (unused imports, exception chaining, etc.)
-
-**Integration Tests (9 new tests):**
-Using typer.testing.CliRunner for end-to-end testing:
-- repo init: Config creation, overwrite protection, --force flag
-- repo register: URL parsing and validation
-- repo list: Empty state, filtered empty state
-- repo pr link: Success and error paths
-- Tests run without touching git/gh (mocked or config-only)
-
-**Final UX Polish:**
-- repo init: Prevents accidental config overwrite without --force flag
-- repo list: Shows friendly message when filtered results are empty
-- repo create: Only shows submodule messages when .gitmodules exists
-- All Path objects converted to strings in output (clean UX)
-
-**Total Test Coverage: 37 passing tests**
-- 11 tests: config.py (URL parsing, YAML I/O, validation)
-- 7 tests: git_ops.py (git commands with error handling)
-- 10 tests: gh_ops.py (gh CLI integration with fallback)
-- 9 tests: CLI integration (end-to-end command orchestration)
 
 ### 2025-11-03 - Phase 3: Auto-complete Implementation ✓
 Implemented shell auto-complete functionality for improved UX.
@@ -252,21 +65,98 @@ Implemented shell auto-complete functionality for improved UX.
 - Context-aware completion (e.g., branches filtered by selected repo) would require custom shell completion scripts
 - Current implementation shows all branches, which is acceptable for MVP
 
+### 2025-11-07 - Rebase and PR Update
+Successfully rebased Phase 3 branch onto main after PR #2 merge.
+
+**Issue:**
+- PR #2 was merged to main with Phase 2 implementation
+- Branch contained duplicate Phase 2 commits (different hashes)
+- Standard rebase caused conflicts in 7 files
+
+**Resolution:**
+- Created clean branch from latest main
+- Cherry-picked only Phase 3 commits (3 commits)
+- Force-pushed to update PR #3
+
+**Result:**
+- Clean history: 3 Phase 3 commits on top of main
+- All 43 tests passing
+- No merge conflicts
+- PR #3 updated and ready to merge
+
+### 2025-11-07 - Archived Phase 1 & 2
+Moved completed Phase 1 and Phase 2 details to PROJECT_ARCHIVE.md to reduce context size.
+
+**What Was Archived:**
+- Phase 1: Project scaffolding development log (2025-10-30 15:30-19:30)
+- Phase 2: Core infrastructure implementation log (2025-10-30 20:00-21:00)
+- Complete technical details, test coverage, and code review notes
+- Total ~200 lines moved to archive
+
+**What Remains in PROJECT.md:**
+- Brief phase summaries with PR links
+- Phase 3 (current) development log
+- Current status and architecture decisions
+- Command specifications and success criteria
+
+**Reason:** Phase 1 & 2 are complete and merged. Focus PROJECT.md on active/recent work.
+
+### 2025-11-07 - Feedback: Support Existing Branch Checkout
++Fixed issue where `repo create` failed when trying to checkout existing branches.
+
+**Problem:**
+- Command always tried to create NEW branches with `-b` flag
+- Failed with "fatal: a branch named 'X' already exists" for existing branches
+- Example: `repo create superset 6.0` failed because 6.0 branch exists
+
+**Solution:**
+- Added `branch_exists()` function to check for existing branches (local and remote)
+- Updated `create_worktree()` to conditionally use `-b` flag only for new branches
+- For existing branches, checkout directly without `-b` flag
+- Added `get_default_branch()` to resolve `origin/HEAD` in bare repos (doesn't exist)
+- Display "(existing)" vs "(new, from X)" in CLI output
+
+**Implementation:**
+- `git_ops.branch_exists()` - Check refs/remotes/origin/* and refs/heads/*
+- `git_ops.get_default_branch()` - Resolve HEAD symref or fallback to main/master
+- `git_ops.create_worktree()` - Returns tuple (None, is_new_branch)
+- Updated `main.py` to display appropriate status message
+
+**Testing:**
+- Added 8 new tests (51 total, all passing)
+- Tests for: branch_exists, get_default_branch, new/existing branch workflows
+- Manual verification: `repo create superset 6.0` ✓
+
+**Behavioral Change:**
+- `repo create <repo> <existing-branch>` - Checkout existing branch
+- `repo create <repo> <new-branch>` - Create new branch from default
+- `repo create <repo> <new-branch> --from <ref>` - Create from custom ref
+
 ## Current Status
 
 **Active:**
-- Phase 3 auto-complete complete ✓
-- Ready for manual end-to-end testing
+- PR #3 ready to merge
+- All code complete, rebased, and tested ✓
 
 **Completed:**
-- ✅ Phase 1: Project scaffolding (PR #1 merged)
-- ✅ Phase 2: Core infrastructure, all MVP commands, CI/CD, tests (37 tests passing)
-- ✅ Phase 3: Auto-complete implementation (43 tests passing)
+- ✅ Phase 1: Project scaffolding (PR #1 merged to main)
+- ✅ Phase 2: Core infrastructure, all MVP commands, CI/CD, tests (PR #2 merged to main)
+- ✅ Phase 3: Auto-complete implementation, docs fixes, CI fixes (PR #3 created)
+- ✅ All 43 tests passing
+- ✅ Documentation updated and accurate
+- ✅ Branch rebased successfully
+
+**Pull Requests:**
+- PR #1: Phase 1 scaffolding - ✅ Merged
+- PR #2: Phase 2 core infrastructure - ✅ Merged
+- PR #3: Phase 3 auto-complete - 🔄 Open (rebased, ready to merge)
+  - 3 clean commits on top of main
+  - https://github.com/sadpandajoe/repo-cli/pull/3
 
 **Next:**
-- Commit Phase 3 changes
-- Manual end-to-end testing of complete workflows
-- Create PR for Phase 2+3 combined
+- Merge PR #3
+- Manual end-to-end testing (optional)
+- Release v0.1.0
 
 **Blocked:**
 - None

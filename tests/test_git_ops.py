@@ -8,8 +8,10 @@ import pytest
 
 from repo_cli.git_ops import (
     GitOperationError,
+    branch_exists,
     clone_bare,
     create_worktree,
+    get_default_branch,
     init_submodules,
     remove_worktree,
 )
@@ -46,20 +48,135 @@ class TestCloneBare:
             clone_bare("invalid-url", Path("/tmp/test"))
 
 
+class TestGetDefaultBranch:
+    """Tests for get_default_branch function."""
+
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_get_default_branch_from_head(self, mock_run):
+        """Should return default branch from HEAD symref."""
+        mock_run.return_value = MagicMock(returncode=0, stdout="refs/heads/master\n")
+
+        repo_path = Path("/tmp/test/repo.git")
+        result = get_default_branch(repo_path)
+
+        assert result == "master"
+        mock_run.assert_called_once_with(
+            ["git", "-C", str(repo_path), "symbolic-ref", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_get_default_branch_fallback_to_main(self, mock_run):
+        """Should fallback to 'main' if HEAD check fails and main exists."""
+        # First call (symbolic-ref) fails, second call (check main) succeeds
+        mock_run.side_effect = [
+            subprocess.CalledProcessError(1, ["git"]),
+            MagicMock(returncode=0),
+        ]
+
+        repo_path = Path("/tmp/test/repo.git")
+        result = get_default_branch(repo_path)
+
+        assert result == "main"
+        assert mock_run.call_count == 2
+
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_get_default_branch_fallback_to_master(self, mock_run):
+        """Should fallback to 'master' if HEAD and main checks fail."""
+        # All checks fail
+        mock_run.side_effect = [
+            subprocess.CalledProcessError(1, ["git"]),
+            subprocess.CalledProcessError(1, ["git"]),
+        ]
+
+        repo_path = Path("/tmp/test/repo.git")
+        result = get_default_branch(repo_path)
+
+        assert result == "master"
+        assert mock_run.call_count == 2
+
+
+class TestBranchExists:
+    """Tests for branch_exists function."""
+
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_branch_exists_remote(self, mock_run):
+        """Should return True when remote branch exists."""
+        mock_run.return_value = MagicMock(returncode=0)
+
+        repo_path = Path("/tmp/test/repo.git")
+        branch = "6.0"
+
+        result = branch_exists(repo_path, branch)
+
+        assert result is True
+        mock_run.assert_called_once_with(
+            ["git", "-C", str(repo_path), "show-ref", "--verify", "refs/remotes/origin/6.0"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_branch_exists_local(self, mock_run):
+        """Should return True when local branch exists."""
+        # First call (remote check) fails, second call (local check) succeeds
+        mock_run.side_effect = [
+            subprocess.CalledProcessError(1, ["git"]),
+            MagicMock(returncode=0),
+        ]
+
+        repo_path = Path("/tmp/test/repo.git")
+        branch = "main"
+
+        result = branch_exists(repo_path, branch)
+
+        assert result is True
+        assert mock_run.call_count == 2
+
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_branch_does_not_exist(self, mock_run):
+        """Should return False when branch doesn't exist."""
+        # Both remote and local checks fail
+        mock_run.side_effect = [
+            subprocess.CalledProcessError(1, ["git"]),
+            subprocess.CalledProcessError(1, ["git"]),
+        ]
+
+        repo_path = Path("/tmp/test/repo.git")
+        branch = "nonexistent"
+
+        result = branch_exists(repo_path, branch)
+
+        assert result is False
+        assert mock_run.call_count == 2
+
+
 class TestCreateWorktree:
     """Tests for create_worktree function."""
 
+    @patch("repo_cli.git_ops.get_default_branch")
+    @patch("repo_cli.git_ops.branch_exists")
     @patch("repo_cli.git_ops.subprocess.run")
-    def test_create_worktree_with_default_start_point(self, mock_run):
-        """Should create worktree with default start point."""
+    def test_create_worktree_new_branch_default_start_point(
+        self, mock_run, mock_branch_exists, mock_get_default
+    ):
+        """Should create new worktree with default branch when using origin/HEAD."""
+        mock_branch_exists.return_value = False
+        mock_get_default.return_value = "master"
         mock_run.return_value = MagicMock(returncode=0)
 
         repo_path = Path("/tmp/test/repo.git")
         worktree_path = Path("/tmp/test/repo-branch")
         branch = "feature-123"
 
-        create_worktree(repo_path, worktree_path, branch)
+        _, is_new = create_worktree(repo_path, worktree_path, branch)
 
+        assert is_new is True
+        mock_branch_exists.assert_called_once_with(repo_path, branch)
+        mock_get_default.assert_called_once_with(repo_path)
         mock_run.assert_called_once_with(
             [
                 "git",
@@ -70,16 +187,21 @@ class TestCreateWorktree:
                 str(worktree_path),
                 "-b",
                 branch,
-                "origin/HEAD",
+                "master",
             ],
             check=True,
             capture_output=True,
             text=True,
         )
 
+    @patch("repo_cli.git_ops.get_default_branch")
+    @patch("repo_cli.git_ops.branch_exists")
     @patch("repo_cli.git_ops.subprocess.run")
-    def test_create_worktree_with_custom_start_point(self, mock_run):
-        """Should create worktree with custom start point."""
+    def test_create_worktree_new_branch_custom_start_point(
+        self, mock_run, mock_branch_exists, mock_get_default
+    ):
+        """Should create new worktree with custom start point when branch doesn't exist."""
+        mock_branch_exists.return_value = False
         mock_run.return_value = MagicMock(returncode=0)
 
         repo_path = Path("/tmp/test/repo.git")
@@ -87,8 +209,11 @@ class TestCreateWorktree:
         branch = "hotfix-456"
         start_point = "v2.1.0"
 
-        create_worktree(repo_path, worktree_path, branch, start_point)
+        _, is_new = create_worktree(repo_path, worktree_path, branch, start_point)
 
+        assert is_new is True
+        # get_default_branch should not be called when using custom start point
+        mock_get_default.assert_not_called()
         mock_run.assert_called_once_with(
             [
                 "git",
@@ -105,6 +230,65 @@ class TestCreateWorktree:
             capture_output=True,
             text=True,
         )
+
+    @patch("repo_cli.git_ops.branch_exists")
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_create_worktree_existing_remote_branch(self, mock_run, mock_branch_exists):
+        """Should checkout existing remote branch."""
+        mock_branch_exists.return_value = True
+        mock_run.return_value = MagicMock(returncode=0)
+
+        repo_path = Path("/tmp/test/repo.git")
+        worktree_path = Path("/tmp/test/repo-6.0")
+        branch = "6.0"
+
+        _, is_new = create_worktree(repo_path, worktree_path, branch)
+
+        assert is_new is False
+        mock_branch_exists.assert_called_once_with(repo_path, branch)
+        # Should be called twice: once to verify remote branch exists, once to create worktree
+        assert mock_run.call_count == 2
+        # Last call should be the worktree add without -b flag
+        last_call = mock_run.call_args_list[-1]
+        assert last_call[0][0] == [
+            "git",
+            "-C",
+            str(repo_path),
+            "worktree",
+            "add",
+            str(worktree_path),
+            "origin/6.0",
+        ]
+
+    @patch("repo_cli.git_ops.branch_exists")
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_create_worktree_existing_local_branch(self, mock_run, mock_branch_exists):
+        """Should checkout existing local branch when remote doesn't exist."""
+        mock_branch_exists.return_value = True
+        # First call checks for remote (fails), second creates worktree
+        mock_run.side_effect = [
+            subprocess.CalledProcessError(1, ["git"]),
+            MagicMock(returncode=0),
+        ]
+
+        repo_path = Path("/tmp/test/repo.git")
+        worktree_path = Path("/tmp/test/repo-main")
+        branch = "main"
+
+        _, is_new = create_worktree(repo_path, worktree_path, branch)
+
+        assert is_new is False
+        # Last call should use local branch name
+        last_call = mock_run.call_args_list[-1]
+        assert last_call[0][0] == [
+            "git",
+            "-C",
+            str(repo_path),
+            "worktree",
+            "add",
+            str(worktree_path),
+            "main",
+        ]
 
 
 class TestRemoveWorktree:
