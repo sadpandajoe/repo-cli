@@ -224,13 +224,13 @@ def remove_worktree(repo_path: Path, worktree_path: Path) -> None:
 
 
 def init_submodules(worktree_path: Path) -> int:
-    """Initialize submodules in a worktree.
+    """Initialize submodules in a worktree, excluding .github submodules.
 
     Args:
         worktree_path: Path to the worktree
 
     Returns:
-        Number of submodules present (whether newly initialized or already initialized)
+        Number of non-.github submodules initialized
 
     Raises:
         GitOperationError: If submodule initialization fails
@@ -240,21 +240,46 @@ def init_submodules(worktree_path: Path) -> int:
     if not gitmodules_path.exists():
         return 0
 
-    # Initialize submodules (idempotent - safe to run multiple times)
+    # Parse .gitmodules to find non-.github submodules
     try:
-        subprocess.run(
-            ["git", "-C", str(worktree_path), "submodule", "update", "--init", "--recursive"],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
+        content = gitmodules_path.read_text()
+    except Exception:
+        return 0
+
+    # Extract submodule paths (simple regex-free parsing)
+    submodule_paths = []
+    for line in content.split("\n"):
+        line = line.strip()
+        if line.startswith("path ="):
+            path = line.split("=", 1)[1].strip()
+            # Skip .github submodules (CI/CD actions, not needed for local dev)
+            if not path.startswith(".github/"):
+                submodule_paths.append(path)
+
+    # If no non-.github submodules, return early
+    if not submodule_paths:
+        return 0
+
+    # Initialize each non-.github submodule individually
+    try:
+        for path in submodule_paths:
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(worktree_path),
+                    "submodule",
+                    "update",
+                    "--init",
+                    "--recursive",
+                    path,
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
     except subprocess.CalledProcessError as e:
         stderr = e.stderr.strip() if e.stderr else "Unknown error"
         raise GitOperationError(f"Failed to initialize submodules: {stderr}") from e
 
-    # Count submodules by parsing .gitmodules for [submodule sections
-    try:
-        content = gitmodules_path.read_text()
-        return content.count("[submodule")
-    except Exception:
-        return 0
+    return len(submodule_paths)

@@ -317,7 +317,7 @@ class TestInitSubmodules:
 
     @patch("repo_cli.git_ops.subprocess.run")
     def test_init_submodules_with_submodules_present(self, mock_run, tmp_path):
-        """Should initialize submodules and return count from .gitmodules."""
+        """Should initialize non-.github submodules individually."""
         mock_run.return_value = MagicMock(returncode=0)
 
         # Create a mock .gitmodules file with 3 submodules
@@ -338,12 +338,132 @@ class TestInitSubmodules:
         count = init_submodules(worktree_path)
 
         assert count == 3
-        mock_run.assert_called_once_with(
-            ["git", "-C", str(worktree_path), "submodule", "update", "--init", "--recursive"],
+        # Should be called once per submodule
+        assert mock_run.call_count == 3
+        # Check that each submodule was initialized individually
+        mock_run.assert_any_call(
+            [
+                "git",
+                "-C",
+                str(worktree_path),
+                "submodule",
+                "update",
+                "--init",
+                "--recursive",
+                "sub1",
+            ],
             check=True,
             capture_output=True,
             text=True,
         )
+        mock_run.assert_any_call(
+            [
+                "git",
+                "-C",
+                str(worktree_path),
+                "submodule",
+                "update",
+                "--init",
+                "--recursive",
+                "sub2",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        mock_run.assert_any_call(
+            [
+                "git",
+                "-C",
+                str(worktree_path),
+                "submodule",
+                "update",
+                "--init",
+                "--recursive",
+                "sub3",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_init_submodules_skips_github_submodules(self, mock_run, tmp_path):
+        """Should skip .github submodules (CI/CD actions)."""
+        mock_run.return_value = MagicMock(returncode=0)
+
+        # Create .gitmodules with mix of regular and .github submodules
+        worktree_path = tmp_path / "repo-branch"
+        worktree_path.mkdir()
+        gitmodules = worktree_path / ".gitmodules"
+        gitmodules.write_text("""[submodule "vendor/lib"]
+    path = vendor/lib
+    url = https://github.com/owner/lib.git
+[submodule ".github/actions/setup"]
+    path = .github/actions/setup
+    url = https://github.com/owner/setup.git
+[submodule "core/engine"]
+    path = core/engine
+    url = https://github.com/owner/engine.git
+[submodule ".github/actions/test"]
+    path = .github/actions/test
+    url = https://github.com/owner/test.git
+""")
+
+        count = init_submodules(worktree_path)
+
+        # Should only count non-.github submodules
+        assert count == 2
+        # Should only initialize non-.github submodules
+        assert mock_run.call_count == 2
+        mock_run.assert_any_call(
+            [
+                "git",
+                "-C",
+                str(worktree_path),
+                "submodule",
+                "update",
+                "--init",
+                "--recursive",
+                "vendor/lib",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        mock_run.assert_any_call(
+            [
+                "git",
+                "-C",
+                str(worktree_path),
+                "submodule",
+                "update",
+                "--init",
+                "--recursive",
+                "core/engine",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    def test_init_submodules_with_only_github_submodules(self, tmp_path):
+        """Should return 0 when only .github submodules exist."""
+        worktree_path = tmp_path / "repo-branch"
+        worktree_path.mkdir()
+        gitmodules = worktree_path / ".gitmodules"
+        gitmodules.write_text("""[submodule ".github/actions/setup"]
+    path = .github/actions/setup
+    url = https://github.com/owner/setup.git
+[submodule ".github/actions/test"]
+    path = .github/actions/test
+    url = https://github.com/owner/test.git
+""")
+
+        count = init_submodules(worktree_path)
+
+        # Should return 0 since all submodules are in .github
+        assert count == 0
 
     def test_init_submodules_with_no_gitmodules(self, tmp_path):
         """Should return 0 when .gitmodules doesn't exist."""
