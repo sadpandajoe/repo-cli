@@ -38,6 +38,27 @@ def clone_bare(url: str, target_path: Path) -> None:
         raise GitOperationError(f"Failed to clone repository: {stderr}") from e
 
 
+def fetch_repo(repo_path: Path) -> None:
+    """Fetch latest refs from origin.
+
+    Args:
+        repo_path: Path to the bare repository
+
+    Raises:
+        GitOperationError: If fetch fails
+    """
+    try:
+        subprocess.run(
+            ["git", "-C", str(repo_path), "fetch", "--prune", "origin"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError as e:
+        stderr = e.stderr.strip() if e.stderr else "Unknown error"
+        raise GitOperationError(f"Failed to fetch repository: {stderr}") from e
+
+
 def get_default_branch(repo_path: Path) -> str:
     """Get the default branch for the repository.
 
@@ -116,7 +137,7 @@ def branch_exists(repo_path: Path, branch: str) -> bool:
 
 def create_worktree(
     repo_path: Path, worktree_path: Path, branch: str, start_point: str = "origin/HEAD"
-) -> tuple[None, bool]:
+) -> tuple[str, bool]:
     """Create a new worktree.
 
     Args:
@@ -126,7 +147,7 @@ def create_worktree(
         start_point: Starting point (branch, tag, or commit) - only used for new branches
 
     Returns:
-        Tuple of (None, is_new_branch) where is_new_branch indicates if a new branch was created
+        Tuple of (actual_ref_used, is_new_branch) where actual_ref_used is the ref that was checked out
 
     Raises:
         GitOperationError: If worktree creation fails
@@ -136,9 +157,8 @@ def create_worktree(
 
     try:
         if existing:
-            # Checkout existing branch (try remote first, then local)
-            branch_ref = f"origin/{branch}"
-            # Check if remote branch exists, otherwise use local
+            # Check if local branch exists
+            has_local = False
             try:
                 subprocess.run(
                     [
@@ -147,30 +167,52 @@ def create_worktree(
                         str(repo_path),
                         "show-ref",
                         "--verify",
-                        f"refs/remotes/origin/{branch}",
+                        f"refs/heads/{branch}",
                     ],
                     check=True,
                     capture_output=True,
                     text=True,
                 )
+                has_local = True
             except subprocess.CalledProcessError:
-                branch_ref = branch
+                pass
 
-            subprocess.run(
-                [
-                    "git",
-                    "-C",
-                    str(repo_path),
-                    "worktree",
-                    "add",
-                    str(worktree_path),
-                    branch_ref,
-                ],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-            return None, False
+            if has_local:
+                # Local branch exists, checkout directly
+                subprocess.run(
+                    [
+                        "git",
+                        "-C",
+                        str(repo_path),
+                        "worktree",
+                        "add",
+                        str(worktree_path),
+                        branch,
+                    ],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                return branch, False
+            else:
+                # Remote-only branch, create local tracking branch
+                subprocess.run(
+                    [
+                        "git",
+                        "-C",
+                        str(repo_path),
+                        "worktree",
+                        "add",
+                        str(worktree_path),
+                        "-b",
+                        branch,
+                        f"origin/{branch}",
+                    ],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                return f"origin/{branch}", False
         else:
             # Create new branch
             # Resolve origin/HEAD to actual default branch for bare repos
@@ -195,7 +237,7 @@ def create_worktree(
                 capture_output=True,
                 text=True,
             )
-            return None, True
+            return resolved_start, True
     except subprocess.CalledProcessError as e:
         stderr = e.stderr.strip() if e.stderr else "Unknown error"
         raise GitOperationError(f"Failed to create worktree: {stderr}") from e

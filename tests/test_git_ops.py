@@ -172,9 +172,10 @@ class TestCreateWorktree:
         worktree_path = Path("/tmp/test/repo-branch")
         branch = "feature-123"
 
-        _, is_new = create_worktree(repo_path, worktree_path, branch)
+        actual_ref, is_new = create_worktree(repo_path, worktree_path, branch)
 
         assert is_new is True
+        assert actual_ref == "master"
         mock_branch_exists.assert_called_once_with(repo_path, branch)
         mock_get_default.assert_called_once_with(repo_path)
         mock_run.assert_called_once_with(
@@ -209,9 +210,10 @@ class TestCreateWorktree:
         branch = "hotfix-456"
         start_point = "v2.1.0"
 
-        _, is_new = create_worktree(repo_path, worktree_path, branch, start_point)
+        actual_ref, is_new = create_worktree(repo_path, worktree_path, branch, start_point)
 
         assert is_new is True
+        assert actual_ref == "v2.1.0"
         # get_default_branch should not be called when using custom start point
         mock_get_default.assert_not_called()
         mock_run.assert_called_once_with(
@@ -233,22 +235,26 @@ class TestCreateWorktree:
 
     @patch("repo_cli.git_ops.branch_exists")
     @patch("repo_cli.git_ops.subprocess.run")
-    def test_create_worktree_existing_remote_branch(self, mock_run, mock_branch_exists):
-        """Should checkout existing remote branch."""
+    def test_create_worktree_existing_remote_only_branch(self, mock_run, mock_branch_exists):
+        """Should create local tracking branch for remote-only branch."""
         mock_branch_exists.return_value = True
-        mock_run.return_value = MagicMock(returncode=0)
+        # First call checks for local branch (fails), second creates worktree
+        mock_run.side_effect = [
+            subprocess.CalledProcessError(1, ["git"]),  # No local branch
+            MagicMock(returncode=0),  # Worktree creation succeeds
+        ]
 
         repo_path = Path("/tmp/test/repo.git")
         worktree_path = Path("/tmp/test/repo-6.0")
         branch = "6.0"
 
-        _, is_new = create_worktree(repo_path, worktree_path, branch)
+        actual_ref, is_new = create_worktree(repo_path, worktree_path, branch)
 
         assert is_new is False
+        assert actual_ref == "origin/6.0"
         mock_branch_exists.assert_called_once_with(repo_path, branch)
-        # Should be called twice: once to verify remote branch exists, once to create worktree
         assert mock_run.call_count == 2
-        # Last call should be the worktree add without -b flag
+        # Last call should create local tracking branch with -b flag
         last_call = mock_run.call_args_list[-1]
         assert last_call[0][0] == [
             "git",
@@ -257,28 +263,31 @@ class TestCreateWorktree:
             "worktree",
             "add",
             str(worktree_path),
+            "-b",
+            "6.0",
             "origin/6.0",
         ]
 
     @patch("repo_cli.git_ops.branch_exists")
     @patch("repo_cli.git_ops.subprocess.run")
     def test_create_worktree_existing_local_branch(self, mock_run, mock_branch_exists):
-        """Should checkout existing local branch when remote doesn't exist."""
+        """Should checkout existing local branch directly."""
         mock_branch_exists.return_value = True
-        # First call checks for remote (fails), second creates worktree
+        # First call checks for local branch (succeeds), second creates worktree
         mock_run.side_effect = [
-            subprocess.CalledProcessError(1, ["git"]),
-            MagicMock(returncode=0),
+            MagicMock(returncode=0),  # Local branch exists
+            MagicMock(returncode=0),  # Worktree creation succeeds
         ]
 
         repo_path = Path("/tmp/test/repo.git")
         worktree_path = Path("/tmp/test/repo-main")
         branch = "main"
 
-        _, is_new = create_worktree(repo_path, worktree_path, branch)
+        actual_ref, is_new = create_worktree(repo_path, worktree_path, branch)
 
         assert is_new is False
-        # Last call should use local branch name
+        assert actual_ref == "main"
+        # Last call should checkout local branch directly
         last_call = mock_run.call_args_list[-1]
         assert last_call[0][0] == [
             "git",

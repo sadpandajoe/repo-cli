@@ -63,7 +63,7 @@ def init(
         if config_path.exists() and not force:
             console.print(f"✗ Error: Config already exists at {config_path}", style="red")
             console.print(
-                "ℹ Use --force to overwrite existing config (this will delete all repos and worktrees)",
+                "ℹ Use --force to overwrite existing config",
                 style="yellow",
             )
             sys.exit(1)
@@ -174,6 +174,13 @@ def create(
             except git_ops.GitOperationError as e:
                 console.print(f"✗ {e}", style="red")
                 sys.exit(1)
+        else:
+            # Fetch latest refs so we can see new remote branches
+            try:
+                git_ops.fetch_repo(bare_repo_path)
+            except git_ops.GitOperationError as e:
+                console.print(f"⚠ Warning: {e}", style="yellow")
+                # Continue even if fetch fails (offline scenario)
 
         # Determine start point
         start_point = from_ref if from_ref else "origin/HEAD"
@@ -181,7 +188,7 @@ def create(
         # Create worktree
         console.print(f"✓ Creating worktree: {str(worktree_path)}", style="cyan")
         try:
-            _, is_new_branch = git_ops.create_worktree(
+            actual_ref, is_new_branch = git_ops.create_worktree(
                 bare_repo_path, worktree_path, branch, start_point
             )
         except git_ops.GitOperationError as e:
@@ -190,7 +197,7 @@ def create(
 
         console.print(f"✓ Created worktree: {str(worktree_path)}", style="green")
         if is_new_branch:
-            console.print(f"✓ Branch: {branch} (new, from {start_point})", style="green")
+            console.print(f"✓ Branch: {branch} (new, from {actual_ref})", style="green")
         else:
             console.print(f"✓ Branch: {branch} (existing)", style="green")
 
@@ -213,7 +220,7 @@ def create(
             "repo": repo,
             "branch": branch,
             "pr": None,
-            "start_point": start_point,
+            "start_point": actual_ref,  # Use actual ref that was checked out
             "created_at": datetime.now().isoformat(),
         }
         config.save_config(cfg)
