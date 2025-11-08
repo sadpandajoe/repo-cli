@@ -132,29 +132,110 @@ Moved completed Phase 1 and Phase 2 details to PROJECT_ARCHIVE.md to reduce cont
 - `repo create <repo> <new-branch>` - Create new branch from default
 - `repo create <repo> <new-branch> --from <ref>` - Create from custom ref
 
+### 2025-11-07 - Feedback: Skip .github Submodules
+Fixed unnecessary initialization of GitHub Actions stored as submodules.
+
+**Problem:**
+- Apache Superset showed "Initialized 8 submodules" but all were GitHub Actions in `.github/`
+- These are CI/CD tools only, not needed for local development
+- Wasted ~50MB of downloads and initialization time
+
+**Solution:**
+- Parse `.gitmodules` to extract submodule paths
+- Filter out any paths starting with `.github/`
+- Initialize only non-.github submodules individually
+- Return count of actually-needed submodules initialized
+
+**Implementation:**
+- Updated `init_submodules()` to parse and filter `.github/` paths
+- Initialize each non-.github submodule with specific path argument
+- For repos with only .github submodules, return 0 (no output message)
+
+**Testing:**
+- Added 2 new tests (53 total, all passing)
+- Test for mixed .github and regular submodules
+- Test for repos with only .github submodules
+- Manual verification: Superset no longer shows submodule message
+
+**Result:**
+- Superset: 0 submodules initialized (previously 8)
+- Faster worktree creation
+- Less disk usage
+
+### 2025-11-07 - Code Review Feedback: Critical Fixes
+Addressed 4 issues from code review feedback.
+
+**Issue 1 [major]: Remote branches invisible after initial clone**
+- **Problem**: `branch_exists()` ran on stale refs, couldn't see new remote branches
+- **Solution**: Added `fetch_repo()` to update refs before branch check
+- **Implementation**:
+  - `git_ops.fetch_repo()` - Run `git fetch --prune origin`
+  - Call before `create_worktree()` (skip on fresh clone)
+  - Graceful fallback if fetch fails (offline scenario)
+- **Result**: Now sees branches created after initial bare clone
+
+**Issue 2 [major]: Detached HEAD for remote-only branches**
+- **Problem**: `git worktree add <path> origin/<branch>` creates detached HEAD
+- **Solution**: Check for local branch first, create tracking branch if remote-only
+- **Implementation**:
+  - If local branch exists: checkout directly
+  - If remote-only: use `-b <branch> origin/<branch>` to create tracking branch
+  - Users can now push commits back to remote
+- **Result**: Proper branch checkouts, no detached HEAD
+
+**Issue 3 [minor]: Misleading repo init --force warning**
+- **Problem**: Warning said "will delete all repos and worktrees" but didn't
+- **Solution**: Removed misleading text
+- **Implementation**: Only overwrites `~/.repo-cli/config.yaml`
+- **Result**: Accurate description of actual behavior
+
+**Issue 4 [nit]: Worktree metadata records wrong start_point**
+- **Problem**: Always recorded input (e.g., `origin/HEAD`) even for existing branches
+- **Solution**: Return actual ref used from `create_worktree()`
+- **Implementation**:
+  - Changed return type to `tuple[str, bool]` (actual_ref, is_new_branch)
+  - Save actual ref to config instead of input start_point
+  - For existing local: saves branch name
+  - For existing remote: saves `origin/<branch>`
+  - For new branches: saves resolved ref (e.g., `master` instead of `origin/HEAD`)
+- **Result**: `repo list` shows truthful metadata
+
+**Testing:**
+- All 53 tests passing
+- Updated test signatures and logic to match new behavior
+- All linting checks pass
+
+**Commits:**
+- Commit 1: Support existing branch checkout (8 new tests)
+- Commit 2: Skip .github submodules (2 new tests)
+- Commit 3: Address code review feedback (test updates)
+
 ## Current Status
 
 **Active:**
-- PR #3 ready to merge
-- All code complete, rebased, and tested ✓
+- PR #4 addressing feedback (3 commits)
+- All code complete, tested, and ready for review ✓
 
 **Completed:**
 - ✅ Phase 1: Project scaffolding (PR #1 merged to main)
 - ✅ Phase 2: Core infrastructure, all MVP commands, CI/CD, tests (PR #2 merged to main)
-- ✅ Phase 3: Auto-complete implementation, docs fixes, CI fixes (PR #3 created)
-- ✅ All 43 tests passing
+- ✅ Phase 3: Auto-complete implementation (PR #3 merged to main)
+- ✅ Feedback fixes: Existing branch checkout, .github submodules, code review issues
+- ✅ All 53 tests passing
 - ✅ Documentation updated and accurate
-- ✅ Branch rebased successfully
 
 **Pull Requests:**
 - PR #1: Phase 1 scaffolding - ✅ Merged
 - PR #2: Phase 2 core infrastructure - ✅ Merged
-- PR #3: Phase 3 auto-complete - 🔄 Open (rebased, ready to merge)
-  - 3 clean commits on top of main
-  - https://github.com/sadpandajoe/repo-cli/pull/3
+- PR #3: Phase 3 auto-complete - ✅ Merged
+- PR #4: Feedback fixes - 🔄 Open (ready for review)
+  - Commit 1: Support existing branch checkout
+  - Commit 2: Skip .github submodules
+  - Commit 3: Address code review feedback (4 fixes)
+  - https://github.com/sadpandajoe/repo-cli/pull/4
 
 **Next:**
-- Merge PR #3
+- Review and merge PR #4
 - Manual end-to-end testing (optional)
 - Release v0.1.0
 
