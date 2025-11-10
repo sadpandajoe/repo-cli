@@ -482,3 +482,15 @@ class TestInitSubmodules:
         count = init_submodules(worktree_path)
 
         assert count == 0
+
+    def test_init_submodules_fails_on_unreadable_gitmodules(self, tmp_path):
+        """Should raise GitOperationError when .gitmodules is unreadable."""
+        worktree_path = tmp_path / "repo-branch"
+        worktree_path.mkdir()
+
+        # Create .gitmodules but make it unreadable
+        gitmodules_path = worktree_path / ".gitmodules"
+        gitmodules_path.write_bytes(b"\xff\xfe")  # Invalid UTF-8
+
+        with pytest.raises(GitOperationError, match="Failed to read .gitmodules"):
+            init_submodules(worktree_path)

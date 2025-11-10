@@ -56,7 +56,8 @@ All MVP commands are implemented and tested. Ready for production use.
 - ✅ GitHub PR status integration (with graceful fallback)
 - ✅ Rich console output (colors, tables, symbols)
 - ✅ Comprehensive error handling (user-friendly messages)
-- ✅ 43 passing tests (28 unit + 15 integration)
+- ✅ Security: Input validation, path traversal protection, safe alias management
+- ✅ 81 passing tests with full security coverage
 - ✅ CI/CD with GitHub Actions
 - ✅ Ruff linting and formatting
 
@@ -81,6 +82,30 @@ repo pr link myrepo feature-123 4567
 # Delete a worktree
 repo delete myrepo feature-123
 ```
+
+## Known Limitations
+
+### Config Key Collision (Fixed in v0.2.0)
+
+**Issue**: Worktree config keys use the format `f"{repo}-{branch}"`, which can collide in edge cases.
+
+**Example Collision**:
+- Repo `api-core` with branch `feature-123` → key: `api-core-feature-123`
+- Repo `api` with branch `core-feature-123` → key: `api-core-feature-123` (same!)
+
+**Impact**: Creating the second worktree would silently overwrite the first entry in config, causing commands like `list`, `delete`, and `pr link` to operate on the wrong worktree.
+
+**Workaround**: Avoid using repo aliases that could create ambiguous keys:
+- Don't use repo aliases ending with `-X` where X is another registered repo name
+- Example: If you have repo `api`, avoid registering `api-core` or `my-api`
+
+**Status**: This will be fixed in v0.2.0 with a nested dict structure (`worktrees[repo][branch]`) and automatic config migration.
+
+**Why Deferred?**
+- Pre-v0.1.0 release with no production users
+- Collision is unlikely in typical usage patterns
+- More critical security issues (path traversal, silent overwrites) fixed first
+- Proper structural fix requires config migration logic
 
 ## Development
 

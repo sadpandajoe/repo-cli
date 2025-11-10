@@ -92,18 +92,41 @@ def init(
 
 
 @app.command()
-def register(alias: str, url: str):
+def register(
+    alias: str,
+    url: str,
+    force: Annotated[bool, typer.Option("--force", help="Overwrite existing alias")] = False,
+):
     """Register a repository alias for easy reference."""
     try:
+        # Validate alias name to prevent path traversal
+        utils.validate_identifier(alias)
+
         # Parse GitHub URL to extract owner/repo
         owner_repo = config.parse_github_url(url)
 
         # Load config
         cfg = config.load_config()
 
-        # Add repo
+        # Check if alias already exists
         if "repos" not in cfg:
             cfg["repos"] = {}
+        elif alias in cfg["repos"] and not force:
+            existing_url = cfg["repos"][alias]["url"]
+            console.print(
+                f"✗ Error: Alias '{alias}' already registered to {existing_url}", style="red"
+            )
+            console.print("ℹ Use --force to overwrite existing alias", style="yellow")
+            console.print(
+                "⚠ Warning: Overwriting will affect all existing worktrees using this alias",
+                style="yellow",
+            )
+            sys.exit(1)
+
+        # Add or update repo
+        if alias in cfg["repos"] and force:
+            old_url = cfg["repos"][alias]["url"]
+            console.print(f"⚠ Overwriting '{alias}' (was: {old_url})", style="yellow")
 
         cfg["repos"][alias] = {"url": url, "owner_repo": owner_repo}
 
@@ -134,6 +157,14 @@ def create(
 ):
     """Create a new worktree for a branch."""
     try:
+        # Validate inputs to prevent path traversal
+        try:
+            utils.validate_identifier(repo)
+            utils.validate_identifier(branch)
+        except ValueError as e:
+            console.print(f"✗ Error: {e}", style="red")
+            sys.exit(1)
+
         # Load config
         try:
             cfg = config.load_config()

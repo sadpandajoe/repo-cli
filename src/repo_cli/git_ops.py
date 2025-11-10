@@ -285,8 +285,11 @@ def init_submodules(worktree_path: Path) -> int:
     # Parse .gitmodules to find non-.github submodules
     try:
         content = gitmodules_path.read_text()
-    except Exception:
-        return 0
+    except (OSError, PermissionError, UnicodeDecodeError) as e:
+        raise GitOperationError(
+            f"Failed to read .gitmodules file: {e}. "
+            "This may indicate a corrupt file, permission issue, or encoding problem."
+        ) from e
 
     # Extract submodule paths (simple regex-free parsing)
     submodule_paths = []

@@ -88,6 +88,62 @@ class TestCliRegister:
         assert result.exit_code == 1
         assert "Invalid GitHub URL" in result.stdout
 
+    def test_register_path_traversal_blocked(self, tmp_path, monkeypatch):
+        """Should block path traversal attempts in alias."""
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+
+        # Initialize first
+        runner.invoke(app, ["init"])
+
+        # Try to register with path traversal alias
+        result = runner.invoke(app, ["register", "../prod", "git@github.com:owner/repo.git"])
+
+        assert result.exit_code == 1
+        assert "Invalid identifier" in result.stdout
+
+    def test_register_duplicate_without_force_blocked(self, tmp_path, monkeypatch):
+        """Should block duplicate registration without --force."""
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+
+        # Initialize first
+        runner.invoke(app, ["init"])
+
+        # Register repo
+        runner.invoke(app, ["register", "test", "git@github.com:owner/repo.git"])
+
+        # Try to register again with different URL
+        result = runner.invoke(app, ["register", "test", "git@github.com:owner/other.git"])
+
+        assert result.exit_code == 1
+        assert "already registered" in result.stdout
+        assert "--force" in result.stdout
+
+    def test_register_duplicate_with_force_allowed(self, tmp_path, monkeypatch):
+        """Should allow duplicate registration with --force."""
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+
+        # Initialize first
+        runner.invoke(app, ["init"])
+
+        # Register repo
+        runner.invoke(app, ["register", "test", "git@github.com:owner/repo.git"])
+
+        # Register again with --force
+        result = runner.invoke(
+            app, ["register", "test", "git@github.com:owner/other.git", "--force"]
+        )
+
+        assert result.exit_code == 0
+        assert "Overwriting" in result.stdout
+        assert "Registered 'test'" in result.stdout
+
+        # Verify the URL was updated
+        cfg = config.load_config()
+        assert cfg["repos"]["test"]["url"] == "git@github.com:owner/other.git"
+
 
 class TestCliList:
     """Integration tests for repo list command."""
