@@ -210,8 +210,19 @@ def create(
             try:
                 git_ops.fetch_repo(bare_repo_path)
             except git_ops.GitOperationError as e:
-                console.print(f"⚠ Warning: {e}", style="yellow")
-                # Continue even if fetch fails (offline scenario)
+                console.print(f"⚠ Warning: Failed to fetch from remote: {e}", style="yellow")
+                console.print(
+                    "⚠ Branch information may be stale. If the branch exists on remote,",
+                    style="yellow",
+                )
+                console.print(
+                    "   creating it now will result in a diverged branch.",
+                    style="yellow",
+                )
+                # Prompt user to continue with potentially stale refs
+                if not typer.confirm("Do you want to create the branch anyway?"):
+                    console.print("Cancelled", style="yellow")
+                    sys.exit(0)
 
         # Determine start point
         start_point = from_ref if from_ref else "origin/HEAD"

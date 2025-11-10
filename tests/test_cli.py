@@ -145,6 +145,73 @@ class TestCliRegister:
         assert cfg["repos"]["test"]["url"] == "git@github.com:owner/other.git"
 
 
+class TestCliCreate:
+    """Integration tests for repo create command."""
+
+    def test_create_prompts_on_fetch_failure_and_cancels(self, tmp_path, monkeypatch):
+        """Should prompt user when fetch fails and allow cancellation."""
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        base_dir = tmp_path / "code"
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+
+        # Initialize and register repo
+        runner.invoke(app, ["init", "--base-dir", str(base_dir)])
+        runner.invoke(app, ["register", "test", "git@github.com:owner/repo.git"])
+
+        # Create bare repo directory to simulate existing repo
+        bare_repo = base_dir / "test.git"
+        bare_repo.mkdir(parents=True)
+
+        # Mock fetch_repo to raise GitOperationError
+        from repo_cli.git_ops import GitOperationError
+
+        with patch("repo_cli.git_ops.fetch_repo") as mock_fetch:
+            mock_fetch.side_effect = GitOperationError("Network timeout")
+
+            # User responds "no" to prompt
+            result = runner.invoke(app, ["create", "test", "feature-123"], input="n\n")
+
+            assert result.exit_code == 0
+            assert "Failed to fetch from remote" in result.stdout
+            assert "Branch information may be stale" in result.stdout
+            assert "diverged branch" in result.stdout
+            assert "Cancelled" in result.stdout
+
+    def test_create_prompts_on_fetch_failure_and_continues(self, tmp_path, monkeypatch):
+        """Should prompt user when fetch fails and allow continuation."""
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        base_dir = tmp_path / "code"
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+
+        # Initialize and register repo
+        runner.invoke(app, ["init", "--base-dir", str(base_dir)])
+        runner.invoke(app, ["register", "test", "git@github.com:owner/repo.git"])
+
+        # Create bare repo directory to simulate existing repo
+        bare_repo = base_dir / "test.git"
+        bare_repo.mkdir(parents=True)
+
+        # Mock git operations
+        from repo_cli.git_ops import GitOperationError
+
+        with (
+            patch("repo_cli.git_ops.fetch_repo") as mock_fetch,
+            patch("repo_cli.git_ops.create_worktree") as mock_create,
+            patch("repo_cli.git_ops.init_submodules") as mock_submodules,
+        ):
+            mock_fetch.side_effect = GitOperationError("Network timeout")
+            mock_create.return_value = ("origin/HEAD", True)
+            mock_submodules.return_value = 0
+
+            # User responds "yes" to prompt
+            result = runner.invoke(app, ["create", "test", "feature-123"], input="y\n")
+
+            assert result.exit_code == 0
+            assert "Failed to fetch from remote" in result.stdout
+            assert "Do you want to create the branch anyway?" in result.stdout
+            assert "Created worktree" in result.stdout
+
+
 class TestCliList:
     """Integration tests for repo list command."""
 
