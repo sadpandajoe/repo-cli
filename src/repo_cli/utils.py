@@ -5,6 +5,7 @@ Provides path helpers, validation functions, and common utilities.
 
 import re
 from pathlib import Path
+from urllib.parse import quote
 
 
 def expand_path(path: str) -> Path:
@@ -69,14 +70,6 @@ def validate_branch_name(branch: str) -> None:
 
     # Git allows: alphanumeric, dots, hyphens, underscores, slashes, @
     # Git prohibits: control chars, spaces, ~, ^, :, ?, *, [, \, @{, .., ending with dot
-
-    # Check for double underscores (reserved for slash sanitization)
-    # This prevents collision: feature/foo and feature__foo would both map to feature__foo
-    if "__" in branch:
-        raise ValueError(
-            f"Invalid branch name '{branch}': cannot contain '__' "
-            "(reserved for slash sanitization)"
-        )
 
     # Check for prohibited characters
     if re.search(r"[\x00-\x1f\x7f \~\^:\?\*\[\\\]]", branch):
@@ -173,9 +166,10 @@ def get_worktree_path(base_dir: Path, repo: str, branch: str) -> Path:
     validate_repo_alias(repo)
     validate_branch_name(branch)
 
-    # Sanitize branch name for filesystem (replace / with __)
-    # This allows slashes in branch names while keeping filesystem paths safe
-    safe_branch = branch.replace("/", "__")
+    # Percent-encode branch name for filesystem safety (bijective encoding)
+    # This allows all valid Git branch names while ensuring unique paths
+    # Example: feature/foo -> feature%2Ffoo
+    safe_branch = quote(branch, safe="")
 
     path = base_dir / f"{repo}-{safe_branch}"
 

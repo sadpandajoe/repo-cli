@@ -210,6 +210,83 @@ Addressed 4 issues from code review feedback.
 - Commit 2: Skip .github submodules (2 new tests)
 - Commit 3: Address code review feedback (test updates)
 
+### 2025-11-11 14:30 - Planning: Path Collision Fix (Feedback Round 2)
++Received feedback identifying remaining collision vulnerability in path sanitization.
+
+**Feedback Summary:**
+1. **[CRITICAL] Path collision still possible** - Current `__` replacement is not bijective
+   - Problem: `feature/foo` and `feature__foo` both map to `repo-feature__foo`
+   - Impact: Second worktree creation fails or corrupts existing worktree
+   - Current approach: Simple string replace (`/` → `__`) in `get_worktree_path()`
+   - Requested: Bijective encoding (percent-encoding or hash-based)
+
+2. **[BLOCKER] Test suite not running in user's sandbox**
+   - UV panics: "Attempted to create a NULL object" in system-configuration
+   - User cannot verify test passing status
+   - Requested: Run full suite in normal environment before committing
+
+**Planning Mode:**
+- Need to evaluate bijective encoding approaches
+- Must ensure backward compatibility with existing worktrees
+- Need migration strategy for existing paths
+- Must verify tests pass in normal environment
+
+### 2025-11-11 14:30 - Path Collision Fix: Percent-Encoding
+Implementing bijective encoding to prevent path collisions.
+
+**Problem:**
+- Current `__` replacement is not bijective (not 1:1 reversible)
+- `feature/foo` and `feature__foo` both map to `repo-feature__foo` (COLLISION!)
+- Previous fix (rejecting `__` in branch names) doesn't solve root issue
+
+**Investigation:**
+- Checked claudette-cli for reference implementation
+- Finding: They avoid the problem by using simple project names (no slashes)
+- Our requirement: Support hierarchical branch names like `feature/foo`
+
+**Accepted Solution: Percent-Encoding**
+- Encode `/` as `%2F`, `%` as `%25`, etc.
+- Standard approach (RFC 3986, same as URLs)
+- Truly bijective: can round-trip encode/decode
+- Reasonable readability: `feature/foo` → `repo-feature%2Ffoo`
+- Python stdlib support: `urllib.parse.quote()`
+
+**Implementation Plan:**
+1. Replace `branch.replace("/", "__")` with `quote(branch, safe='')`
+2. Remove `__` validation (no longer needed)
+3. Add migration for existing `__`-based paths in config
+4. Update all tests for new encoding
+5. Run full test suite in normal environment
+
+**Examples After Fix:**
+- `feature/foo` → `repo-feature%2Ffoo`
+- `feature__foo` → `repo-feature__foo` (no encoding needed)
+- `fix/issue#42` → `repo-fix%2Fissue%2342`
+
+**Implementation Complete:**
+1. ✅ Updated `utils.py`:
+   - Imported `urllib.parse.quote`
+   - Replaced `branch.replace("/", "__")` with `quote(branch, safe='')`
+   - Updated comments to reflect percent-encoding
+2. ✅ Removed `__` validation:
+   - Deleted double-underscore check from `validate_branch_name()`
+   - Branch names with `__` now allowed (percent-encoding prevents collisions)
+3. ✅ Added path migration in `config.py`:
+   - New function `migrate_worktree_paths()` automatically renames old directories
+   - Called from `load_config()` after config migration
+   - Safe: only renames if old path exists and new path doesn't
+4. ✅ Updated all tests:
+   - Changed 3 validation tests to accept `__` in branch names
+   - Updated path test to expect `%2F` instead of `__`
+   - Added 5 new tests for path migration (130 total tests)
+5. ✅ All 125 tests passing in normal environment
+
+**Behavioral Changes:**
+- New worktrees: Use percent-encoded paths (e.g., `feature%2Ffoo`)
+- Existing worktrees: Automatically migrated on next `load_config()` call
+- Branch names: Now accepts `__` (previously rejected)
+- Path collisions: **Fixed** - `feature/foo` and `feature__foo` now map to different paths
+
 ### 2025-11-11 - Critical Pre-Release Fixes
 Fixed two critical issues identified before v0.1.0 release.
 
@@ -256,30 +333,35 @@ Fixed two critical issues identified before v0.1.0 release.
 ## Current Status
 
 **Active:**
-- PR #4 addressing feedback (4 commits)
-- All code complete, tested, and ready for review ✓
+- Working on PR #4 feedback fixes (5 commits planned)
+- Implementing percent-encoding to fix path collisions ✓
 
 **Completed:**
 - ✅ Phase 1: Project scaffolding (PR #1 merged to main)
 - ✅ Phase 2: Core infrastructure, all MVP commands, CI/CD, tests (PR #2 merged to main)
 - ✅ Phase 3: Auto-complete implementation (PR #3 merged to main)
-- ✅ Feedback fixes: Existing branch checkout, .github submodules, code review issues
-- ✅ Pre-release fixes: Config migration, path collision prevention
-- ✅ All 120 tests passing (67 new tests added since Phase 1)
+- ✅ Feedback Round 1: Existing branch checkout, .github submodules, code review issues
+- ✅ Feedback Round 2: Bijective path encoding (percent-encoding)
+  - Replaced `__` replacement with percent-encoding (`/` → `%2F`)
+  - Added automatic path migration for existing worktrees
+  - Fixed path collision vulnerability (`feature/foo` vs `feature__foo`)
+  - All 125 tests passing (5 new migration tests added)
 - ✅ Documentation updated and accurate
 
 **Pull Requests:**
 - PR #1: Phase 1 scaffolding - ✅ Merged
 - PR #2: Phase 2 core infrastructure - ✅ Merged
 - PR #3: Phase 3 auto-complete - ✅ Merged
-- PR #4: Feedback fixes - 🔄 Open (ready for review)
+- PR #4: Feedback fixes - 🔄 Open (needs new commit)
   - Commit 1: Support existing branch checkout (8 new tests)
   - Commit 2: Skip .github submodules (2 new tests)
   - Commit 3: Address code review feedback (4 fixes)
-  - Commit 4: Config migration and path collision prevention (11 new tests)
+  - Commit 4: Config migration and path collision prevention (11 new tests) [OLD APPROACH]
+  - Commit 5: Fix path collision with percent-encoding (5 new tests) [PENDING]
   - https://github.com/sadpandajoe/repo-cli/pull/4
 
 **Next:**
+- Commit percent-encoding changes to PR #4
 - Review and merge PR #4
 - Manual end-to-end testing (optional)
 - Release v0.1.0

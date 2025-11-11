@@ -131,21 +131,18 @@ class TestValidateBranchName:
         assert validate_branch_name("user@hostname") is None
         assert validate_branch_name("feature@v2") is None
 
-    # Invalid branch names - double underscores (reserved for sanitization)
-    def test_invalid_double_underscore(self):
-        """Should reject branch names with double underscores."""
-        with pytest.raises(ValueError, match="cannot contain '__'"):
-            validate_branch_name("feature__foo")
+    # Double underscores are now allowed (percent-encoding handles uniqueness)
+    def test_valid_double_underscore(self):
+        """Should accept branch names with double underscores."""
+        assert validate_branch_name("feature__foo") is None
 
-    def test_invalid_double_underscore_multiple(self):
-        """Should reject branch names with multiple double underscores."""
-        with pytest.raises(ValueError, match="cannot contain '__'"):
-            validate_branch_name("user__joe__feature")
+    def test_valid_double_underscore_multiple(self):
+        """Should accept branch names with multiple double underscores."""
+        assert validate_branch_name("user__joe__feature") is None
 
-    def test_invalid_double_underscore_with_slash(self):
-        """Should reject mixed slash and double underscore."""
-        with pytest.raises(ValueError, match="cannot contain '__'"):
-            validate_branch_name("feature/foo__bar")
+    def test_valid_double_underscore_with_slash(self):
+        """Should accept mixed slash and double underscore."""
+        assert validate_branch_name("feature/foo__bar") is None
 
     # Invalid branch names - prohibited characters
     def test_invalid_space(self):
@@ -297,11 +294,11 @@ class TestGetWorktreePath:
         assert path == base_dir / "myrepo-feature-123"
 
     def test_get_worktree_path_with_branch_slashes(self, tmp_path):
-        """Should sanitize slashes in branch names for filesystem."""
+        """Should percent-encode slashes in branch names for filesystem."""
         base_dir = tmp_path / "code"
-        # Slashes in branch names are replaced with __
+        # Slashes in branch names are percent-encoded
         path = get_worktree_path(base_dir, "myrepo", "feature/JIRA-123")
-        assert path == base_dir / "myrepo-feature__JIRA-123"
+        assert path == base_dir / "myrepo-feature%2FJIRA-123"
 
     def test_get_worktree_path_rejects_invalid_repo(self, tmp_path):
         """Should raise error for invalid repo name."""

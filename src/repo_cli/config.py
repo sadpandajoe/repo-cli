@@ -4,9 +4,11 @@ Handles loading, saving, and validating the YAML configuration file.
 Parses GitHub URLs to extract owner/repo slugs.
 """
 
+import contextlib
 import re
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import yaml
 
@@ -63,6 +65,54 @@ def migrate_config(config: dict[str, Any]) -> dict[str, Any]:
     return config
 
 
+def migrate_worktree_paths(config: dict[str, Any]) -> dict[str, Any]:
+    """Migrate worktree directory paths from __ encoding to percent-encoding.
+
+    Old format used __ to replace / in branch names (feature/foo -> feature__foo).
+    New format uses percent-encoding (feature/foo -> feature%2Ffoo).
+    This migration renames existing worktree directories to the new format.
+
+    Args:
+        config: Configuration dictionary
+
+    Returns:
+        Configuration dictionary (unchanged, but directories may be renamed)
+    """
+    base_dir_str = config.get("base_dir")
+    if not base_dir_str:
+        return config
+
+    base_dir = Path(base_dir_str).expanduser().resolve()
+    worktrees = config.get("worktrees", {})
+
+    for _key, value in worktrees.items():
+        if not isinstance(value, dict) or "repo" not in value or "branch" not in value:
+            continue
+
+        repo = value["repo"]
+        branch = value["branch"]
+
+        # Calculate old path (__ replacement) and new path (percent-encoding)
+        old_safe_branch = branch.replace("/", "__")
+        new_safe_branch = quote(branch, safe="")
+
+        # Skip if no encoding needed (no special characters)
+        if old_safe_branch == new_safe_branch:
+            continue
+
+        old_path = base_dir / f"{repo}-{old_safe_branch}"
+        new_path = base_dir / f"{repo}-{new_safe_branch}"
+
+        # Migrate: rename old path to new path if old exists and new doesn't
+        if old_path.exists() and not new_path.exists():
+            # If rename fails (permissions, cross-device, etc.), skip silently
+            # The worktree will need to be manually migrated or recreated
+            with contextlib.suppress(OSError):
+                old_path.rename(new_path)
+
+    return config
+
+
 def load_config() -> dict[str, Any]:
     """Load configuration from YAML file.
 
@@ -91,6 +141,9 @@ def load_config() -> dict[str, Any]:
 
         # Migrate config if needed
         data = migrate_config(data)
+
+        # Migrate worktree paths from __ to percent-encoding
+        data = migrate_worktree_paths(data)
 
         # Save migrated config back to disk
         if "version" in data:

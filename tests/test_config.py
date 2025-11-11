@@ -275,3 +275,142 @@ class TestMigrateConfig:
         reloaded = load_config()
         assert "superset::6.0" in reloaded["worktrees"]
         assert reloaded["version"] == "0.1.0"
+
+
+class TestMigrateWorktreePaths:
+    """Test worktree path migration from __ to percent-encoding."""
+
+    def test_migrate_slash_to_percent_encoding(self, tmp_path):
+        """Should rename directories from __ format to percent-encoding."""
+        base_dir = tmp_path / "code"
+        base_dir.mkdir(parents=True)
+
+        # Create old-format directory
+        old_path = base_dir / "preset-feature__JIRA-123"
+        old_path.mkdir()
+        (old_path / "test.txt").write_text("test content")
+
+        config = {
+            "base_dir": str(base_dir),
+            "worktrees": {
+                "preset::feature/JIRA-123": {
+                    "repo": "preset",
+                    "branch": "feature/JIRA-123",
+                    "pr": None,
+                },
+            },
+        }
+
+        from repo_cli.config import migrate_worktree_paths
+
+        migrated = migrate_worktree_paths(config)
+
+        # Old path should be renamed to new path
+        new_path = base_dir / "preset-feature%2FJIRA-123"
+        assert new_path.exists()
+        assert not old_path.exists()
+        assert (new_path / "test.txt").read_text() == "test content"
+
+        # Config should be unchanged
+        assert migrated == config
+
+    def test_migrate_no_special_chars(self, tmp_path):
+        """Should skip branches without special characters."""
+        base_dir = tmp_path / "code"
+        base_dir.mkdir(parents=True)
+
+        # Create directory with no special chars
+        simple_path = base_dir / "preset-main"
+        simple_path.mkdir()
+
+        config = {
+            "base_dir": str(base_dir),
+            "worktrees": {
+                "preset::main": {
+                    "repo": "preset",
+                    "branch": "main",
+                    "pr": None,
+                },
+            },
+        }
+
+        from repo_cli.config import migrate_worktree_paths
+
+        migrate_worktree_paths(config)
+
+        # Path should remain unchanged
+        assert simple_path.exists()
+
+    def test_migrate_multiple_worktrees(self, tmp_path):
+        """Should migrate multiple worktrees."""
+        base_dir = tmp_path / "code"
+        base_dir.mkdir(parents=True)
+
+        # Create multiple old-format directories
+        old1 = base_dir / "preset-feature__foo"
+        old2 = base_dir / "superset-bugfix__bar"
+        old1.mkdir()
+        old2.mkdir()
+
+        config = {
+            "base_dir": str(base_dir),
+            "worktrees": {
+                "preset::feature/foo": {"repo": "preset", "branch": "feature/foo", "pr": None},
+                "superset::bugfix/bar": {"repo": "superset", "branch": "bugfix/bar", "pr": None},
+            },
+        }
+
+        from repo_cli.config import migrate_worktree_paths
+
+        migrate_worktree_paths(config)
+
+        # Both should be migrated
+        assert (base_dir / "preset-feature%2Ffoo").exists()
+        assert (base_dir / "superset-bugfix%2Fbar").exists()
+        assert not old1.exists()
+        assert not old2.exists()
+
+    def test_migrate_skip_if_new_exists(self, tmp_path):
+        """Should not migrate if new path already exists."""
+        base_dir = tmp_path / "code"
+        base_dir.mkdir(parents=True)
+
+        # Create both old and new paths
+        old_path = base_dir / "preset-feature__foo"
+        new_path = base_dir / "preset-feature%2Ffoo"
+        old_path.mkdir()
+        new_path.mkdir()
+        (old_path / "old.txt").write_text("old")
+        (new_path / "new.txt").write_text("new")
+
+        config = {
+            "base_dir": str(base_dir),
+            "worktrees": {
+                "preset::feature/foo": {"repo": "preset", "branch": "feature/foo", "pr": None},
+            },
+        }
+
+        from repo_cli.config import migrate_worktree_paths
+
+        migrate_worktree_paths(config)
+
+        # Both should still exist (no migration)
+        assert old_path.exists()
+        assert new_path.exists()
+        assert (old_path / "old.txt").exists()
+        assert (new_path / "new.txt").exists()
+
+    def test_migrate_no_base_dir(self):
+        """Should handle config without base_dir gracefully."""
+        config = {
+            "worktrees": {
+                "preset::feature/foo": {"repo": "preset", "branch": "feature/foo", "pr": None},
+            },
+        }
+
+        from repo_cli.config import migrate_worktree_paths
+
+        result = migrate_worktree_paths(config)
+
+        # Should return config unchanged
+        assert result == config
