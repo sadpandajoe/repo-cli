@@ -83,29 +83,70 @@ repo pr link myrepo feature-123 4567
 repo delete myrepo feature-123
 ```
 
+## Naming Rules
+
+### Branch Names
+
+Branch names follow Git's official rules and support hierarchical grouping with slashes:
+
+**Allowed:**
+- Alphanumeric characters, dots, hyphens, underscores
+- Forward slashes for hierarchical grouping (e.g., `feature/JIRA-123`, `bugfix/auth`)
+- `@` symbol (except the sequence `@{`)
+
+**Examples of valid branch names:**
+```bash
+repo create myrepo main
+repo create myrepo feature/JIRA-123
+repo create myrepo bugfix/foo@bar
+repo create myrepo user/joe/feature
+repo create myrepo release/v1.2.3
+```
+
+**Prohibited:**
+- Cannot start or end with `/`
+- Cannot contain consecutive slashes `//`
+- Cannot contain `..` or `@{`
+- Cannot end with `.`
+- Slash-separated components cannot start with `.` or end with `.lock`
+- Cannot contain spaces, `~`, `^`, `:`, `?`, `*`, `[`, `\`
+
+### Repository Aliases
+
+Repository aliases have stricter rules to prevent path traversal attacks:
+
+**Allowed:**
+- Alphanumeric characters, dots, hyphens, underscores only
+- No slashes (path traversal protection)
+- Cannot contain `::` (internal delimiter)
+
+**Examples:**
+```bash
+repo register myrepo git@github.com:user/repo.git          # Valid
+repo register api-core git@github.com:company/api-core.git # Valid
+repo register my.repo git@github.com:user/my.repo.git      # Valid
+```
+
+**Invalid examples:**
+```bash
+repo register my/repo ...     # Error: slashes not allowed
+repo register ../prod ...     # Error: path traversal blocked
+repo register repo::name ...  # Error: :: is internal delimiter
+```
+
 ## Known Limitations
 
-### Config Key Collision (Fixed in v0.2.0)
+### Config Key Collision (Fixed in v0.1.0)
 
-**Issue**: Worktree config keys use the format `f"{repo}-{branch}"`, which can collide in edge cases.
+**Status**: ✅ **FIXED** - Config keys now use `::` delimiter instead of `-`.
 
-**Example Collision**:
-- Repo `api-core` with branch `feature-123` → key: `api-core-feature-123`
-- Repo `api` with branch `core-feature-123` → key: `api-core-feature-123` (same!)
+**Previous Issue**: Keys like `f"{repo}-{branch}"` could collide (e.g., `api-core` + `feature` vs `api` + `core-feature`).
 
-**Impact**: Creating the second worktree would silently overwrite the first entry in config, causing commands like `list`, `delete`, and `pr link` to operate on the wrong worktree.
+**Fix**: Changed to `f"{repo}::{branch}"` format, which cannot collide because `::` is prohibited in repo aliases.
 
-**Workaround**: Avoid using repo aliases that could create ambiguous keys:
-- Don't use repo aliases ending with `-X` where X is another registered repo name
-- Example: If you have repo `api`, avoid registering `api-core` or `my-api`
+**Migration**: No migration needed - v0.1.0 uses new format from the start.
 
-**Status**: This will be fixed in v0.2.0 with a nested dict structure (`worktrees[repo][branch]`) and automatic config migration.
-
-**Why Deferred?**
-- Pre-v0.1.0 release with no production users
-- Collision is unlikely in typical usage patterns
-- More critical security issues (path traversal, silent overwrites) fixed first
-- Proper structural fix requires config migration logic
+**Future**: v0.2.0 will implement nested dict structure (`worktrees[repo][branch]`) with automatic migration for any v0.1.0 configs.
 
 ## Development
 

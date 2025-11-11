@@ -19,34 +19,93 @@ def expand_path(path: str) -> Path:
     return Path(path).expanduser().resolve()
 
 
-def validate_identifier(name: str) -> None:
-    """Validate that a string is safe to use as a repo alias or branch name.
+def validate_repo_alias(alias: str) -> None:
+    """Validate that a string is safe to use as a repository alias.
 
-    Prevents path traversal attacks by ensuring identifiers only contain
-    alphanumeric characters, dots, hyphens, and underscores.
+    Prevents path traversal attacks by ensuring aliases only contain
+    alphanumeric characters, dots, hyphens, and underscores (no slashes).
 
     Args:
-        name: Identifier to validate (repo alias or branch name)
+        alias: Repository alias to validate
 
     Raises:
-        ValueError: If identifier contains invalid characters or patterns
+        ValueError: If alias contains invalid characters or patterns
     """
-    if not name:
-        raise ValueError("Invalid identifier: cannot be empty")
+    if not alias:
+        raise ValueError("Invalid repo alias: cannot be empty")
 
-    # Allow only alphanumeric, dots, hyphens, underscores
-    # This prevents: /, \, .., parent directory references, spaces, special chars
+    # Check for :: delimiter first (specific error message for config key collision prevention)
+    if "::" in alias:
+        raise ValueError(f"Invalid repo alias '{alias}': cannot contain '::'")
+
+    # Strict: no slashes for repo aliases (prevents path traversal)
     pattern = r"^[A-Za-z0-9._-]+$"
 
-    if not re.match(pattern, name):
+    if not re.match(pattern, alias):
         raise ValueError(
-            f"Invalid identifier '{name}': must contain only letters, numbers, "
+            f"Invalid repo alias '{alias}': must contain only letters, numbers, "
             "dots, hyphens, and underscores"
         )
 
     # Additional check: reject if it's only dots (., .., ...)
-    if name.replace(".", "") == "":
-        raise ValueError(f"Invalid identifier '{name}': cannot consist only of dots")
+    if alias.replace(".", "") == "":
+        raise ValueError(f"Invalid repo alias '{alias}': cannot consist only of dots")
+
+
+def validate_branch_name(branch: str) -> None:
+    """Validate that a string is a valid Git branch name.
+
+    Follows Git's branch naming rules (git check-ref-format) while preventing
+    dangerous patterns. Allows slashes for hierarchical grouping.
+
+    Args:
+        branch: Branch name to validate
+
+    Raises:
+        ValueError: If branch name violates Git's rules
+    """
+    if not branch:
+        raise ValueError("Invalid branch name: cannot be empty")
+
+    # Git allows: alphanumeric, dots, hyphens, underscores, slashes, @
+    # Git prohibits: control chars, spaces, ~, ^, :, ?, *, [, \, @{, .., ending with dot
+
+    # Check for prohibited characters
+    if re.search(r"[\x00-\x1f\x7f \~\^:\?\*\[\\\]]", branch):
+        raise ValueError(
+            f"Invalid branch name '{branch}': contains prohibited characters "
+            "(spaces, ~, ^, :, ?, *, [, \\, or control characters)"
+        )
+
+    # Check for prohibited sequences and patterns
+    if branch == "@":
+        raise ValueError("Invalid branch name: cannot be single '@' character")
+
+    if "@{" in branch:
+        raise ValueError(f"Invalid branch name '{branch}': cannot contain '@{{'")
+
+    if ".." in branch:
+        raise ValueError(f"Invalid branch name '{branch}': cannot contain '..'")
+
+    if branch.endswith("."):
+        raise ValueError(f"Invalid branch name '{branch}': cannot end with '.'")
+
+    if branch.startswith("/") or branch.endswith("/"):
+        raise ValueError(f"Invalid branch name '{branch}': cannot start or end with '/'")
+
+    if "//" in branch:
+        raise ValueError(f"Invalid branch name '{branch}': cannot contain consecutive slashes")
+
+    # Validate each slash-separated component
+    for component in branch.split("/"):
+        if component.startswith("."):
+            raise ValueError(
+                f"Invalid branch name '{branch}': component '{component}' cannot start with '.'"
+            )
+        if component.endswith(".lock"):
+            raise ValueError(
+                f"Invalid branch name '{branch}': component '{component}' cannot end with '.lock'"
+            )
 
 
 def validate_path_safety(path: Path, base_dir: Path) -> None:
@@ -103,10 +162,14 @@ def get_worktree_path(base_dir: Path, repo: str, branch: str) -> Path:
         ValueError: If repo or branch contains invalid characters
     """
     # Validate inputs to prevent path traversal
-    validate_identifier(repo)
-    validate_identifier(branch)
+    validate_repo_alias(repo)
+    validate_branch_name(branch)
 
-    path = base_dir / f"{repo}-{branch}"
+    # Sanitize branch name for filesystem (replace / with __)
+    # This allows slashes in branch names while keeping filesystem paths safe
+    safe_branch = branch.replace("/", "__")
+
+    path = base_dir / f"{repo}-{safe_branch}"
 
     # Additional safety check
     validate_path_safety(path, base_dir)
@@ -128,7 +191,7 @@ def get_bare_repo_path(base_dir: Path, repo: str) -> Path:
         ValueError: If repo contains invalid characters
     """
     # Validate input to prevent path traversal
-    validate_identifier(repo)
+    validate_repo_alias(repo)
 
     path = base_dir / f"{repo}.git"
 

@@ -100,7 +100,7 @@ class TestCliRegister:
         result = runner.invoke(app, ["register", "../prod", "git@github.com:owner/repo.git"])
 
         assert result.exit_code == 1
-        assert "Invalid identifier" in result.stdout
+        assert "Invalid repo alias" in result.stdout
 
     def test_register_duplicate_without_force_blocked(self, tmp_path, monkeypatch):
         """Should block duplicate registration without --force."""
@@ -286,7 +286,7 @@ class TestCliPrLink:
             "test": {"url": "git@github.com:owner/repo.git", "owner_repo": "owner/repo"}
         }
         cfg["worktrees"] = {
-            "test-feature": {
+            "test::feature": {
                 "repo": "test",
                 "branch": "feature",
                 "pr": None,
@@ -301,7 +301,7 @@ class TestCliPrLink:
         result = runner.invoke(app, ["pr", "link", "test", "feature", "123"])
 
         assert result.exit_code == 0
-        assert "Linked PR #123 to test-feature" in result.stdout
+        assert "Linked PR #123 to test/feature" in result.stdout
 
     def test_pr_link_worktree_not_found(self, tmp_path, monkeypatch):
         """Should error when worktree doesn't exist."""

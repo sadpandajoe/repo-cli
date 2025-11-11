@@ -100,7 +100,7 @@ def register(
     """Register a repository alias for easy reference."""
     try:
         # Validate alias name to prevent path traversal
-        utils.validate_identifier(alias)
+        utils.validate_repo_alias(alias)
 
         # Parse GitHub URL to extract owner/repo
         owner_repo = config.parse_github_url(url)
@@ -159,8 +159,8 @@ def create(
     try:
         # Validate inputs to prevent path traversal
         try:
-            utils.validate_identifier(repo)
-            utils.validate_identifier(branch)
+            utils.validate_repo_alias(repo)
+            utils.validate_branch_name(branch)
         except ValueError as e:
             console.print(f"✗ Error: {e}", style="red")
             sys.exit(1)
@@ -254,8 +254,8 @@ def create(
             except git_ops.GitOperationError as e:
                 console.print(f"⚠ Warning: {e}", style="yellow")
 
-        # Save worktree metadata
-        worktree_key = f"{repo}-{branch}"
+        # Save worktree metadata (use :: delimiter to prevent collisions)
+        worktree_key = f"{repo}::{branch}"
         if "worktrees" not in cfg:
             cfg["worktrees"] = {}
         cfg["worktrees"][worktree_key] = {
@@ -355,16 +355,16 @@ def delete(
             sys.exit(1)
 
         base_dir = utils.expand_path(cfg["base_dir"])
-        worktree_key = f"{repo}-{branch}"
+        worktree_key = f"{repo}::{branch}"
 
         # Check if worktree exists in config
         if worktree_key not in cfg.get("worktrees", {}):
-            console.print(f"✗ Error: Worktree '{worktree_key}' not found in config", style="red")
+            console.print(f"✗ Error: Worktree '{repo}/{branch}' not found in config", style="red")
             sys.exit(1)
 
         # Confirm deletion unless --force
         if not force:
-            confirm = typer.confirm(f"⚠ Delete worktree '{worktree_key}'?")
+            confirm = typer.confirm(f"⚠ Delete worktree '{repo}/{branch}'?")
             if not confirm:
                 console.print("Cancelled", style="yellow")
                 return
@@ -411,11 +411,11 @@ def pr_link(
             console.print("✗ Error: Config not found. Run 'repo init' first", style="red")
             sys.exit(1)
 
-        worktree_key = f"{repo}-{branch}"
+        worktree_key = f"{repo}::{branch}"
 
         # Check if worktree exists
         if worktree_key not in cfg.get("worktrees", {}):
-            console.print(f"✗ Error: Worktree '{worktree_key}' not found", style="red")
+            console.print(f"✗ Error: Worktree '{repo}/{branch}' not found", style="red")
             sys.exit(1)
 
         # Get owner/repo for validation
@@ -435,7 +435,7 @@ def pr_link(
         cfg["worktrees"][worktree_key]["pr"] = pr_number
         config.save_config(cfg)
 
-        console.print(f"✓ Linked PR #{pr_number} to {worktree_key}", style="green")
+        console.print(f"✓ Linked PR #{pr_number} to {repo}/{branch}", style="green")
 
     except Exception as e:
         console.print(f"✗ Error: {e}", style="red")
