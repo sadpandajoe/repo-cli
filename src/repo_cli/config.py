@@ -16,8 +16,57 @@ def get_config_path() -> Path:
     return Path.home() / ".repo-cli" / "config.yaml"
 
 
+def migrate_config(config: dict[str, Any]) -> dict[str, Any]:
+    """Migrate old config format to current format.
+
+    Detects and converts worktree keys from old format (repo-branch) to
+    new format (repo::branch). This migration is necessary because the
+    old format had collision issues (e.g., 'api-core-feature' could be
+    'api' + 'core-feature' OR 'api-core' + 'feature').
+
+    Args:
+        config: Configuration dictionary to migrate
+
+    Returns:
+        Migrated configuration dictionary
+    """
+    worktrees = config.get("worktrees", {})
+    if not worktrees:
+        return config
+
+    new_worktrees = {}
+    migrated_count = 0
+
+    for key, value in worktrees.items():
+        # Skip if already in new format (contains ::)
+        if "::" in key:
+            new_worktrees[key] = value
+            continue
+
+        # Old format: {repo}-{branch}
+        # Use metadata to reconstruct the correct key
+        if isinstance(value, dict) and "repo" in value and "branch" in value:
+            repo = value["repo"]
+            branch = value["branch"]
+            new_key = f"{repo}::{branch}"
+            new_worktrees[new_key] = value
+            migrated_count += 1
+        else:
+            # Malformed entry, keep as-is
+            new_worktrees[key] = value
+
+    if migrated_count > 0:
+        config["worktrees"] = new_worktrees
+        # Add version field to track migrations
+        config.setdefault("version", "0.1.0")
+
+    return config
+
+
 def load_config() -> dict[str, Any]:
     """Load configuration from YAML file.
+
+    Automatically migrates old config formats to current format.
 
     Returns:
         Configuration dictionary
@@ -39,6 +88,13 @@ def load_config() -> dict[str, Any]:
 
         if not isinstance(data, dict):
             raise ValueError(f"Config file must contain a YAML dictionary: {config_path}")
+
+        # Migrate config if needed
+        data = migrate_config(data)
+
+        # Save migrated config back to disk
+        if "version" in data:
+            save_config(data)
 
         return data
 

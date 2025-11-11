@@ -70,6 +70,14 @@ def validate_branch_name(branch: str) -> None:
     # Git allows: alphanumeric, dots, hyphens, underscores, slashes, @
     # Git prohibits: control chars, spaces, ~, ^, :, ?, *, [, \, @{, .., ending with dot
 
+    # Check for double underscores (reserved for slash sanitization)
+    # This prevents collision: feature/foo and feature__foo would both map to feature__foo
+    if "__" in branch:
+        raise ValueError(
+            f"Invalid branch name '{branch}': cannot contain '__' "
+            "(reserved for slash sanitization)"
+        )
+
     # Check for prohibited characters
     if re.search(r"[\x00-\x1f\x7f \~\^:\?\*\[\\\]]", branch):
         raise ValueError(

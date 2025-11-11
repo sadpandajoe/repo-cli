@@ -117,7 +117,7 @@ class TestValidateBranchName:
         assert validate_branch_name("my-branch") is None
 
     def test_valid_branch_with_underscores(self):
-        """Should accept branch names with underscores."""
+        """Should accept branch names with single underscores."""
         assert validate_branch_name("feature_123") is None
         assert validate_branch_name("my_branch") is None
 
@@ -130,6 +130,22 @@ class TestValidateBranchName:
         """Should accept branch names with @ sign (but not @{)."""
         assert validate_branch_name("user@hostname") is None
         assert validate_branch_name("feature@v2") is None
+
+    # Invalid branch names - double underscores (reserved for sanitization)
+    def test_invalid_double_underscore(self):
+        """Should reject branch names with double underscores."""
+        with pytest.raises(ValueError, match="cannot contain '__'"):
+            validate_branch_name("feature__foo")
+
+    def test_invalid_double_underscore_multiple(self):
+        """Should reject branch names with multiple double underscores."""
+        with pytest.raises(ValueError, match="cannot contain '__'"):
+            validate_branch_name("user__joe__feature")
+
+    def test_invalid_double_underscore_with_slash(self):
+        """Should reject mixed slash and double underscore."""
+        with pytest.raises(ValueError, match="cannot contain '__'"):
+            validate_branch_name("feature/foo__bar")
 
     # Invalid branch names - prohibited characters
     def test_invalid_space(self):

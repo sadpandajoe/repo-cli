@@ -2,7 +2,7 @@
 
 import pytest
 
-from repo_cli.config import load_config, parse_github_url, save_config
+from repo_cli.config import load_config, migrate_config, parse_github_url, save_config
 
 
 class TestParseGitHubUrl:
@@ -80,7 +80,7 @@ class TestConfigLoadSave:
                 }
             },
             "worktrees": {
-                "preset-feature-123": {"repo": "preset", "branch": "feature-123", "pr": 4567}
+                "preset::feature-123": {"repo": "preset", "branch": "feature-123", "pr": 4567}
             },
         }
 
@@ -118,3 +118,160 @@ class TestConfigLoadSave:
 
         assert loaded["repos"]["test"]["metadata"]["tags"] == ["python", "cli"]
         assert loaded["repos"]["test"]["metadata"]["stars"] == 100
+
+
+class TestMigrateConfig:
+    """Tests for migrate_config function."""
+
+    def test_migrate_old_format_to_new(self):
+        """Should migrate worktree keys from old format (repo-branch) to new (repo::branch)."""
+        old_config = {
+            "base_dir": "~/code",
+            "repos": {"superset": {"url": "https://github.com/apache/superset.git"}},
+            "worktrees": {
+                "superset-6.0": {"repo": "superset", "branch": "6.0", "pr": None},
+                "superset-test-feature": {"repo": "superset", "branch": "test-feature", "pr": 123},
+            },
+        }
+
+        migrated = migrate_config(old_config)
+
+        # Should have new format keys
+        assert "superset::6.0" in migrated["worktrees"]
+        assert "superset::test-feature" in migrated["worktrees"]
+
+        # Old keys should be replaced
+        assert "superset-6.0" not in migrated["worktrees"]
+        assert "superset-test-feature" not in migrated["worktrees"]
+
+        # Data should be preserved
+        assert migrated["worktrees"]["superset::6.0"]["repo"] == "superset"
+        assert migrated["worktrees"]["superset::6.0"]["branch"] == "6.0"
+        assert migrated["worktrees"]["superset::test-feature"]["pr"] == 123
+
+        # Version should be added
+        assert migrated["version"] == "0.1.0"
+
+    def test_migrate_already_new_format(self):
+        """Should leave new format keys unchanged."""
+        new_config = {
+            "base_dir": "~/code",
+            "repos": {"preset": {"url": "git@github.com:preset-io/preset.git"}},
+            "worktrees": {
+                "preset::feature-123": {"repo": "preset", "branch": "feature-123", "pr": 4567}
+            },
+        }
+
+        migrated = migrate_config(new_config)
+
+        # Should keep new format
+        assert "preset::feature-123" in migrated["worktrees"]
+        assert migrated["worktrees"]["preset::feature-123"]["pr"] == 4567
+
+        # No version added (already in correct format)
+        assert "version" not in migrated
+
+    def test_migrate_mixed_formats(self):
+        """Should handle mix of old and new format keys."""
+        mixed_config = {
+            "base_dir": "~/code",
+            "repos": {},
+            "worktrees": {
+                "superset-6.0": {"repo": "superset", "branch": "6.0", "pr": None},
+                "preset::feature-123": {"repo": "preset", "branch": "feature-123", "pr": 4567},
+            },
+        }
+
+        migrated = migrate_config(mixed_config)
+
+        # Old format should be migrated
+        assert "superset::6.0" in migrated["worktrees"]
+        assert "superset-6.0" not in migrated["worktrees"]
+
+        # New format should be preserved
+        assert "preset::feature-123" in migrated["worktrees"]
+
+        # Version should be added (migration occurred)
+        assert migrated["version"] == "0.1.0"
+
+    def test_migrate_empty_worktrees(self):
+        """Should handle config with no worktrees."""
+        empty_config = {"base_dir": "~/code", "repos": {}, "worktrees": {}}
+
+        migrated = migrate_config(empty_config)
+
+        assert migrated["worktrees"] == {}
+        assert "version" not in migrated
+
+    def test_migrate_no_worktrees_key(self):
+        """Should handle config without worktrees key."""
+        minimal_config = {"base_dir": "~/code", "repos": {}}
+
+        migrated = migrate_config(minimal_config)
+
+        # Should not add worktrees or version if not present
+        assert "worktrees" not in migrated
+        assert "version" not in migrated
+
+    def test_migrate_malformed_entry(self):
+        """Should preserve malformed entries as-is."""
+        malformed_config = {
+            "base_dir": "~/code",
+            "repos": {},
+            "worktrees": {
+                "invalid-entry": "not a dict",  # Malformed
+                "superset-6.0": {"repo": "superset", "branch": "6.0", "pr": None},
+            },
+        }
+
+        migrated = migrate_config(malformed_config)
+
+        # Malformed entry should be kept as-is
+        assert "invalid-entry" in migrated["worktrees"]
+        assert migrated["worktrees"]["invalid-entry"] == "not a dict"
+
+        # Valid entry should be migrated
+        assert "superset::6.0" in migrated["worktrees"]
+        assert "superset-6.0" not in migrated["worktrees"]
+
+    def test_migrate_preserves_version(self):
+        """Should preserve existing version field."""
+        config_with_version = {
+            "base_dir": "~/code",
+            "repos": {},
+            "worktrees": {"superset-6.0": {"repo": "superset", "branch": "6.0", "pr": None}},
+            "version": "0.0.9",  # Existing version
+        }
+
+        migrated = migrate_config(config_with_version)
+
+        # Version should be preserved (setdefault doesn't override)
+        assert migrated["version"] == "0.0.9"
+
+    def test_load_config_triggers_migration(self, tmp_path, monkeypatch):
+        """Should automatically migrate config when loading."""
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+
+        # Save old format config
+        old_config = {
+            "base_dir": "~/code",
+            "repos": {"superset": {"url": "https://github.com/apache/superset.git"}},
+            "worktrees": {
+                "superset-6.0": {"repo": "superset", "branch": "6.0", "pr": None},
+            },
+        }
+        save_config(old_config)
+
+        # Load should trigger migration
+        loaded = load_config()
+
+        # Should have migrated format
+        assert "superset::6.0" in loaded["worktrees"]
+        assert "superset-6.0" not in loaded["worktrees"]
+        assert loaded["version"] == "0.1.0"
+
+        # Migration should be persisted to disk
+        reloaded = load_config()
+        assert "superset::6.0" in reloaded["worktrees"]
+        assert reloaded["version"] == "0.1.0"
