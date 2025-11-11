@@ -210,10 +210,53 @@ Addressed 4 issues from code review feedback.
 - Commit 2: Skip .github submodules (2 new tests)
 - Commit 3: Address code review feedback (test updates)
 
+### 2025-11-11 - Critical Pre-Release Fixes
+Fixed two critical issues identified before v0.1.0 release.
+
+**Issue 1 [HIGH]: Config Migration - Breaking Change**
+- **Problem**: Config key format changed from `repo-branch` to `repo::branch` in commit 047a187
+- **Impact**: Existing user configs became incompatible (delete/pr link operations would fail)
+- **Solution**: Added automatic migration in `config.py`
+  - `migrate_config()` function detects old format keys and converts to new format
+  - Migration runs on every `load_config()` call
+  - Automatically saves migrated config back to disk
+  - Adds version field (`0.1.0`) for tracking future migrations
+  - Handles edge cases: mixed formats, malformed entries, empty configs
+
+**Issue 2 [MEDIUM]: Directory Path Collision**
+- **Problem**: Branches `feature/foo` and `feature__foo` map to same directory path
+- **Impact**: Potential collision when sanitizing slashes (`/` → `__`)
+- **Solution**: Added validation in `utils.py`
+  - `validate_branch_name()` now rejects branch names containing `__`
+  - Clear error message: "cannot contain '__' (reserved for slash sanitization)"
+  - Prevents collision before it can occur
+
+**Testing:**
+- Added 11 new tests (120 total, all passing)
+- Migration tests: old→new, already-new, mixed, edge cases (8 tests)
+- Validation tests: double underscore rejection (3 tests)
+- Manual verification with actual user config:
+  - Successfully migrated 4 worktrees from old format
+  - Verified `repo list` and `repo pr link` work after migration
+  - Verified `feature__test` rejected, `feature_test` accepted
+
+**Implementation:**
+- `config.py`: Added `migrate_config()` function
+- `utils.py`: Enhanced `validate_branch_name()` with `__` check
+- `test_config.py`: Added `TestMigrateConfig` class with 8 tests
+- `test_utils.py`: Added 3 double-underscore validation tests
+- Commit 646e57c: "fix: add config migration and prevent path collisions pre-v0.1.0"
+
+**Result:**
+- Both issues resolved before v0.1.0 release
+- Backward compatibility maintained via automatic migration
+- Future collisions prevented via validation
+- Zero breaking changes for existing users
+
 ## Current Status
 
 **Active:**
-- PR #4 addressing feedback (3 commits)
+- PR #4 addressing feedback (4 commits)
 - All code complete, tested, and ready for review ✓
 
 **Completed:**
@@ -221,7 +264,8 @@ Addressed 4 issues from code review feedback.
 - ✅ Phase 2: Core infrastructure, all MVP commands, CI/CD, tests (PR #2 merged to main)
 - ✅ Phase 3: Auto-complete implementation (PR #3 merged to main)
 - ✅ Feedback fixes: Existing branch checkout, .github submodules, code review issues
-- ✅ All 53 tests passing
+- ✅ Pre-release fixes: Config migration, path collision prevention
+- ✅ All 120 tests passing (67 new tests added since Phase 1)
 - ✅ Documentation updated and accurate
 
 **Pull Requests:**
@@ -229,9 +273,10 @@ Addressed 4 issues from code review feedback.
 - PR #2: Phase 2 core infrastructure - ✅ Merged
 - PR #3: Phase 3 auto-complete - ✅ Merged
 - PR #4: Feedback fixes - 🔄 Open (ready for review)
-  - Commit 1: Support existing branch checkout
-  - Commit 2: Skip .github submodules
+  - Commit 1: Support existing branch checkout (8 new tests)
+  - Commit 2: Skip .github submodules (2 new tests)
   - Commit 3: Address code review feedback (4 fixes)
+  - Commit 4: Config migration and path collision prevention (11 new tests)
   - https://github.com/sadpandajoe/repo-cli/pull/4
 
 **Next:**
