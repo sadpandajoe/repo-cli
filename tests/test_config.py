@@ -327,6 +327,17 @@ class TestMigrateWorktreePaths:
         subprocess.run(
             ["git", "clone", str(bare_repo), str(temp_clone)], check=True, capture_output=True
         )
+        # Configure git identity for CI
+        subprocess.run(
+            ["git", "-C", str(temp_clone), "config", "user.name", "Test User"],
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(temp_clone), "config", "user.email", "test@example.com"],
+            check=True,
+            capture_output=True,
+        )
         (temp_clone / "README.md").write_text("test")
         subprocess.run(["git", "-C", str(temp_clone), "add", "."], check=True, capture_output=True)
         subprocess.run(
@@ -403,6 +414,17 @@ class TestMigrateWorktreePaths:
             temp_clone = base_dir / f"temp-{repo_name}"
             subprocess.run(
                 ["git", "clone", str(bare_repo), str(temp_clone)], check=True, capture_output=True
+            )
+            # Configure git identity for CI
+            subprocess.run(
+                ["git", "-C", str(temp_clone), "config", "user.name", "Test User"],
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(temp_clone), "config", "user.email", "test@example.com"],
+                check=True,
+                capture_output=True,
             )
             (temp_clone / "README.md").write_text("test")
             subprocess.run(
