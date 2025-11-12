@@ -716,6 +716,8 @@ def doctor():
 def upgrade_check():
     """Check if a newer version of repo-cli is available."""
     try:
+        from packaging.version import Version
+
         import repo_cli
 
         # Get installation directory
@@ -768,26 +770,36 @@ def upgrade_check():
                 console.print("  You may be on the latest development version")
             else:
                 # Remove 'v' prefix if present for comparison
-                latest_version = latest_tag.lstrip("v")
-                console.print(f"📦 Latest version: {latest_version}")
+                latest_version_str = latest_tag.lstrip("v")
+                console.print(f"📦 Latest version: {latest_version_str}")
 
-                if latest_version > current_version:
-                    console.print()
+                # Parse versions for proper semver comparison
+                try:
+                    current_ver = Version(current_version)
+                    latest_ver = Version(latest_version_str)
+
+                    if latest_ver > current_ver:
+                        console.print()
+                        console.print(
+                            f"[bold green]✓ Update available: {current_version} → {latest_version_str}[/bold green]"
+                        )
+                        console.print()
+                        console.print("Run 'repo upgrade' to update", style="cyan bold")
+                    elif latest_ver == current_ver:
+                        console.print()
+                        console.print("[bold green]✓ You are on the latest version![/bold green]")
+                    else:
+                        console.print()
+                        console.print(
+                            f"ℹ You are ahead of the latest release ({current_version} > {latest_version_str})",
+                            style="yellow",
+                        )
+                        console.print("  You may be on a development branch")
+                except Exception as e:
                     console.print(
-                        f"[bold green]✓ Update available: {current_version} → {latest_version}[/bold green]"
-                    )
-                    console.print()
-                    console.print("Run 'repo upgrade' to update", style="cyan bold")
-                elif latest_version == current_version:
-                    console.print()
-                    console.print("[bold green]✓ You are on the latest version![/bold green]")
-                else:
-                    console.print()
-                    console.print(
-                        f"ℹ You are ahead of the latest release ({current_version} > {latest_version})",
+                        f"⚠ Warning: Could not parse versions for comparison: {e}",
                         style="yellow",
                     )
-                    console.print("  You may be on a development branch")
 
         except git_ops.GitOperationError as e:
             console.print(f"✗ Failed to check for updates: {e}", style="red")

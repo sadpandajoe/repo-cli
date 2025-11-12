@@ -484,6 +484,203 @@ class TestAutoComplete:
         assert completions == []
 
 
+class TestCliActivate:
+    """Tests for repo activate command."""
+
+    def test_activate_normal_mode(self, tmp_path, monkeypatch):
+        """Should show formatted output with cd hint."""
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        base_dir = tmp_path / "code"
+        worktree_path = base_dir / "myrepo-main"
+
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+
+        # Create config with worktree
+        cfg = {
+            "base_dir": str(base_dir),
+            "repos": {},
+            "worktrees": {
+                "myrepo::main": {
+                    "repo": "myrepo",
+                    "branch": "main",
+                    "pr": None,
+                    "start_point": "origin/HEAD",
+                }
+            },
+        }
+        config.save_config(cfg)
+
+        # Create worktree directory
+        worktree_path.mkdir(parents=True, exist_ok=True)
+
+        result = runner.invoke(app, ["activate", "myrepo", "main"])
+
+        assert result.exit_code == 0
+        assert "Worktree path:" in result.stdout
+        assert "main" in result.stdout  # Check path component is present
+
+    def test_activate_print_mode(self, tmp_path, monkeypatch):
+        """Should print path only for shell integration."""
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        base_dir = tmp_path / "code"
+        worktree_path = base_dir / "myrepo-feature"
+
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+
+        # Create config with worktree
+        cfg = {
+            "base_dir": str(base_dir),
+            "repos": {},
+            "worktrees": {
+                "myrepo::feature": {
+                    "repo": "myrepo",
+                    "branch": "feature",
+                    "pr": None,
+                    "start_point": "origin/HEAD",
+                }
+            },
+        }
+        config.save_config(cfg)
+
+        # Create worktree directory
+        worktree_path.mkdir(parents=True, exist_ok=True)
+
+        result = runner.invoke(app, ["activate", "myrepo", "feature", "--print"])
+
+        assert result.exit_code == 0
+        assert "myrepo-feature" in result.stdout
+        assert "Worktree path:" not in result.stdout  # Should be plain output
+
+    def test_activate_worktree_not_found(self, tmp_path, monkeypatch):
+        """Should error when worktree doesn't exist in config."""
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        base_dir = tmp_path / "code"
+
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+
+        # Create config without worktree
+        cfg = {"base_dir": str(base_dir), "repos": {}, "worktrees": {}}
+        config.save_config(cfg)
+
+        result = runner.invoke(app, ["activate", "myrepo", "main"])
+
+        assert result.exit_code == 1
+        assert "not found" in result.stdout
+
+    def test_activate_directory_missing(self, tmp_path, monkeypatch):
+        """Should error when worktree directory doesn't exist on filesystem."""
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        base_dir = tmp_path / "code"
+
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+
+        # Create config with worktree but don't create directory
+        cfg = {
+            "base_dir": str(base_dir),
+            "repos": {},
+            "worktrees": {
+                "myrepo::main": {
+                    "repo": "myrepo",
+                    "branch": "main",
+                    "pr": None,
+                    "start_point": "origin/HEAD",
+                }
+            },
+        }
+        config.save_config(cfg)
+
+        result = runner.invoke(app, ["activate", "myrepo", "main"])
+
+        assert result.exit_code == 1
+        assert "not found" in result.stdout.lower()
+
+
+class TestCliDoctor:
+    """Tests for repo doctor command."""
+
+    def test_doctor_with_valid_config(self, tmp_path, monkeypatch):
+        """Should pass all checks with valid config."""
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        base_dir = tmp_path / "code"
+
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+
+        # Create config and base directory
+        cfg = {"base_dir": str(base_dir), "repos": {}, "worktrees": {}}
+        config.save_config(cfg)
+        base_dir.mkdir(parents=True, exist_ok=True)
+
+        result = runner.invoke(app, ["doctor"])
+
+        assert result.exit_code == 0
+        assert "repo-cli Doctor" in result.stdout
+        assert "Checking Git version" in result.stdout
+
+    def test_doctor_without_config(self, tmp_path, monkeypatch):
+        """Should still run checks even without config."""
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+
+        # No config exists
+        result = runner.invoke(app, ["doctor"])
+
+        assert result.exit_code == 0
+        assert "repo-cli Doctor" in result.stdout
+        assert "Checking Git version" in result.stdout
+
+
+class TestCliUpgradeCheck:
+    """Tests for repo upgrade-check command."""
+
+    def test_upgrade_check_not_git_repo(self, tmp_path, monkeypatch):
+        """Should error when not installed from git."""
+        # Mock __file__ to point to a non-git directory
+        import repo_cli
+
+        fake_install = tmp_path / "fake-install" / "repo_cli" / "__init__.py"
+        fake_install.parent.mkdir(parents=True)
+        fake_install.touch()
+
+        monkeypatch.setattr(repo_cli, "__file__", str(fake_install))
+
+        result = runner.invoke(app, ["upgrade-check"])
+
+        assert result.exit_code == 1
+        assert "Not installed from git" in result.stdout
+
+    def test_upgrade_check_with_git_repo(self, tmp_path, monkeypatch):
+        """Should check for updates in git repo."""
+        import repo_cli
+
+        # Create fake git installation
+        fake_install = tmp_path / "fake-install"
+        fake_git = fake_install / ".git"
+        fake_git.mkdir(parents=True)
+
+        fake_module = fake_install / "src" / "repo_cli" / "__init__.py"
+        fake_module.parent.mkdir(parents=True)
+        fake_module.touch()
+
+        monkeypatch.setattr(repo_cli, "__file__", str(fake_module))
+
+        # Mock git operations
+        with (
+            patch("repo_cli.git_ops.get_current_branch") as mock_branch,
+            patch("repo_cli.git_ops.has_uncommitted_changes") as mock_changes,
+            patch("repo_cli.git_ops.get_latest_tag") as mock_tag,
+        ):
+            mock_branch.return_value = "main"
+            mock_changes.return_value = False
+            mock_tag.return_value = None  # No tags
+
+            result = runner.invoke(app, ["upgrade-check"])
+
+            assert result.exit_code == 0
+            assert "Checking for updates" in result.stdout
+            assert "No version tags found" in result.stdout
+
+
 class TestE2EWorkflow:
     """End-to-end workflow test simulating fresh installation."""
 
