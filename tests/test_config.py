@@ -2,7 +2,7 @@
 
 import pytest
 
-from repo_cli.config import load_config, parse_github_url, save_config
+from repo_cli.config import load_config, migrate_config, parse_github_url, save_config
 
 
 class TestParseGitHubUrl:
@@ -80,7 +80,7 @@ class TestConfigLoadSave:
                 }
             },
             "worktrees": {
-                "preset-feature-123": {"repo": "preset", "branch": "feature-123", "pr": 4567}
+                "preset::feature-123": {"repo": "preset", "branch": "feature-123", "pr": 4567}
             },
         }
 
@@ -118,3 +118,404 @@ class TestConfigLoadSave:
 
         assert loaded["repos"]["test"]["metadata"]["tags"] == ["python", "cli"]
         assert loaded["repos"]["test"]["metadata"]["stars"] == 100
+
+
+class TestMigrateConfig:
+    """Tests for migrate_config function."""
+
+    def test_migrate_old_format_to_new(self):
+        """Should migrate worktree keys from old format (repo-branch) to new (repo::branch)."""
+        old_config = {
+            "base_dir": "~/code",
+            "repos": {"superset": {"url": "https://github.com/apache/superset.git"}},
+            "worktrees": {
+                "superset-6.0": {"repo": "superset", "branch": "6.0", "pr": None},
+                "superset-test-feature": {"repo": "superset", "branch": "test-feature", "pr": 123},
+            },
+        }
+
+        migrated, changed = migrate_config(old_config)
+
+        # Should have new format keys
+        assert "superset::6.0" in migrated["worktrees"]
+        assert "superset::test-feature" in migrated["worktrees"]
+
+        # Old keys should be replaced
+        assert "superset-6.0" not in migrated["worktrees"]
+        assert "superset-test-feature" not in migrated["worktrees"]
+
+        # Data should be preserved
+        assert migrated["worktrees"]["superset::6.0"]["repo"] == "superset"
+        assert migrated["worktrees"]["superset::6.0"]["branch"] == "6.0"
+        assert migrated["worktrees"]["superset::test-feature"]["pr"] == 123
+
+        # Version should be added
+        assert migrated["version"] == "0.1.0"
+
+        # Should report change
+        assert changed is True
+
+    def test_migrate_already_new_format(self):
+        """Should leave new format keys unchanged."""
+        new_config = {
+            "base_dir": "~/code",
+            "repos": {"preset": {"url": "git@github.com:preset-io/preset.git"}},
+            "worktrees": {
+                "preset::feature-123": {"repo": "preset", "branch": "feature-123", "pr": 4567}
+            },
+        }
+
+        migrated, changed = migrate_config(new_config)
+
+        # Should keep new format
+        assert "preset::feature-123" in migrated["worktrees"]
+        assert migrated["worktrees"]["preset::feature-123"]["pr"] == 4567
+
+        # No version added (already in correct format)
+        assert "version" not in migrated
+
+        # Should not report change
+        assert changed is False
+
+    def test_migrate_mixed_formats(self):
+        """Should handle mix of old and new format keys."""
+        mixed_config = {
+            "base_dir": "~/code",
+            "repos": {},
+            "worktrees": {
+                "superset-6.0": {"repo": "superset", "branch": "6.0", "pr": None},
+                "preset::feature-123": {"repo": "preset", "branch": "feature-123", "pr": 4567},
+            },
+        }
+
+        migrated, changed = migrate_config(mixed_config)
+
+        # Old format should be migrated
+        assert "superset::6.0" in migrated["worktrees"]
+        assert "superset-6.0" not in migrated["worktrees"]
+
+        # New format should be preserved
+        assert "preset::feature-123" in migrated["worktrees"]
+
+        # Version should be added (migration occurred)
+        assert migrated["version"] == "0.1.0"
+
+        # Should report change
+        assert changed is True
+
+    def test_migrate_empty_worktrees(self):
+        """Should handle config with no worktrees."""
+        empty_config = {"base_dir": "~/code", "repos": {}, "worktrees": {}}
+
+        migrated, changed = migrate_config(empty_config)
+
+        assert migrated["worktrees"] == {}
+        assert "version" not in migrated
+        assert changed is False
+
+    def test_migrate_no_worktrees_key(self):
+        """Should handle config without worktrees key."""
+        minimal_config = {"base_dir": "~/code", "repos": {}}
+
+        migrated, changed = migrate_config(minimal_config)
+
+        # Should not add worktrees or version if not present
+        assert "worktrees" not in migrated
+        assert "version" not in migrated
+        assert changed is False
+
+    def test_migrate_malformed_entry(self):
+        """Should preserve malformed entries as-is."""
+        malformed_config = {
+            "base_dir": "~/code",
+            "repos": {},
+            "worktrees": {
+                "invalid-entry": "not a dict",  # Malformed
+                "superset-6.0": {"repo": "superset", "branch": "6.0", "pr": None},
+            },
+        }
+
+        migrated, changed = migrate_config(malformed_config)
+
+        # Malformed entry should be kept as-is
+        assert "invalid-entry" in migrated["worktrees"]
+        assert migrated["worktrees"]["invalid-entry"] == "not a dict"
+
+        # Valid entry should be migrated
+        assert "superset::6.0" in migrated["worktrees"]
+        assert "superset-6.0" not in migrated["worktrees"]
+
+        # Should report change (valid entry was migrated)
+        assert changed is True
+
+    def test_migrate_preserves_version(self):
+        """Should preserve existing version field."""
+        config_with_version = {
+            "base_dir": "~/code",
+            "repos": {},
+            "worktrees": {"superset-6.0": {"repo": "superset", "branch": "6.0", "pr": None}},
+            "version": "0.0.9",  # Existing version
+        }
+
+        migrated, changed = migrate_config(config_with_version)
+
+        # Version should be preserved (setdefault doesn't override)
+        assert migrated["version"] == "0.0.9"
+
+        # Should report change
+        assert changed is True
+
+    def test_load_config_triggers_migration(self, tmp_path, monkeypatch):
+        """Should automatically migrate config when loading."""
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+
+        # Save old format config
+        old_config = {
+            "base_dir": "~/code",
+            "repos": {"superset": {"url": "https://github.com/apache/superset.git"}},
+            "worktrees": {
+                "superset-6.0": {"repo": "superset", "branch": "6.0", "pr": None},
+            },
+        }
+        save_config(old_config)
+
+        # Load should trigger migration
+        loaded = load_config()
+
+        # Should have migrated format
+        assert "superset::6.0" in loaded["worktrees"]
+        assert "superset-6.0" not in loaded["worktrees"]
+        assert loaded["version"] == "0.1.0"
+
+        # Migration should be persisted to disk
+        reloaded = load_config()
+        assert "superset::6.0" in reloaded["worktrees"]
+        assert reloaded["version"] == "0.1.0"
+
+
+class TestMigrateWorktreePaths:
+    """Test worktree path migration from __ to percent-encoding."""
+
+    def test_migrate_slash_to_percent_encoding(self, tmp_path):
+        """Should rename directories from __ format to percent-encoding."""
+        base_dir = tmp_path / "code"
+        base_dir.mkdir(parents=True)
+
+        config = {
+            "base_dir": str(base_dir),
+            "worktrees": {
+                "preset::feature/JIRA-123": {
+                    "repo": "preset",
+                    "branch": "feature/JIRA-123",
+                    "pr": None,
+                },
+            },
+        }
+
+        from repo_cli.config import migrate_worktree_paths
+
+        # Create bare repo for git worktree move to work
+        bare_repo = base_dir / "preset.git"
+        bare_repo.mkdir()
+        # Initialize as bare git repo
+        import subprocess
+
+        subprocess.run(["git", "init", "--bare", str(bare_repo)], check=True, capture_output=True)
+        # Create initial commit (required for worktree operations)
+        temp_clone = base_dir / "temp"
+        subprocess.run(
+            ["git", "clone", str(bare_repo), str(temp_clone)], check=True, capture_output=True
+        )
+        # Configure git identity for CI
+        subprocess.run(
+            ["git", "-C", str(temp_clone), "config", "user.name", "Test User"],
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(temp_clone), "config", "user.email", "test@example.com"],
+            check=True,
+            capture_output=True,
+        )
+        (temp_clone / "README.md").write_text("test")
+        subprocess.run(["git", "-C", str(temp_clone), "add", "."], check=True, capture_output=True)
+        subprocess.run(
+            ["git", "-C", str(temp_clone), "commit", "-m", "init"], check=True, capture_output=True
+        )
+        subprocess.run(["git", "-C", str(temp_clone), "push"], check=True, capture_output=True)
+        # Create old-format worktree using git
+        old_path = base_dir / "preset-feature__JIRA-123"
+        subprocess.run(
+            ["git", "-C", str(bare_repo), "worktree", "add", str(old_path), "--detach"],
+            check=True,
+            capture_output=True,
+        )
+        # Add test file to the worktree
+        (old_path / "test.txt").write_text("test content")
+
+        migrated, changed = migrate_worktree_paths(config)
+
+        # Old path should be renamed to new path
+        new_path = base_dir / "preset-feature%2FJIRA-123"
+        assert new_path.exists()
+        assert not old_path.exists()
+        assert (new_path / "test.txt").read_text() == "test content"
+
+        # Config should be unchanged
+        assert migrated == config
+
+        # Should report change
+        assert changed is True
+
+    def test_migrate_no_special_chars(self, tmp_path):
+        """Should skip branches without special characters."""
+        base_dir = tmp_path / "code"
+        base_dir.mkdir(parents=True)
+
+        # Create directory with no special chars
+        simple_path = base_dir / "preset-main"
+        simple_path.mkdir()
+
+        config = {
+            "base_dir": str(base_dir),
+            "worktrees": {
+                "preset::main": {
+                    "repo": "preset",
+                    "branch": "main",
+                    "pr": None,
+                },
+            },
+        }
+
+        from repo_cli.config import migrate_worktree_paths
+
+        migrate_worktree_paths(config)
+
+        # Path should remain unchanged
+        assert simple_path.exists()
+
+    def test_migrate_multiple_worktrees(self, tmp_path):
+        """Should migrate multiple worktrees."""
+        base_dir = tmp_path / "code"
+        base_dir.mkdir(parents=True)
+
+        # Create bare repos and old-format worktrees
+        import subprocess
+
+        old_paths = []
+        for repo_name, branch in [("preset", "feature/foo"), ("superset", "bugfix/bar")]:
+            bare_repo = base_dir / f"{repo_name}.git"
+            bare_repo.mkdir()
+            subprocess.run(
+                ["git", "init", "--bare", str(bare_repo)], check=True, capture_output=True
+            )
+            # Create initial commit
+            temp_clone = base_dir / f"temp-{repo_name}"
+            subprocess.run(
+                ["git", "clone", str(bare_repo), str(temp_clone)], check=True, capture_output=True
+            )
+            # Configure git identity for CI
+            subprocess.run(
+                ["git", "-C", str(temp_clone), "config", "user.name", "Test User"],
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(temp_clone), "config", "user.email", "test@example.com"],
+                check=True,
+                capture_output=True,
+            )
+            (temp_clone / "README.md").write_text("test")
+            subprocess.run(
+                ["git", "-C", str(temp_clone), "add", "."], check=True, capture_output=True
+            )
+            subprocess.run(
+                ["git", "-C", str(temp_clone), "commit", "-m", "init"],
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(["git", "-C", str(temp_clone), "push"], check=True, capture_output=True)
+            # Create old-format worktree using git
+            old_branch = branch.replace("/", "__")
+            old_path = base_dir / f"{repo_name}-{old_branch}"
+            subprocess.run(
+                ["git", "-C", str(bare_repo), "worktree", "add", str(old_path), "--detach"],
+                check=True,
+                capture_output=True,
+            )
+            old_paths.append(old_path)
+
+        old1, old2 = old_paths
+
+        config = {
+            "base_dir": str(base_dir),
+            "worktrees": {
+                "preset::feature/foo": {"repo": "preset", "branch": "feature/foo", "pr": None},
+                "superset::bugfix/bar": {"repo": "superset", "branch": "bugfix/bar", "pr": None},
+            },
+        }
+
+        from repo_cli.config import migrate_worktree_paths
+
+        _, changed = migrate_worktree_paths(config)
+
+        # Both should be migrated
+        assert (base_dir / "preset-feature%2Ffoo").exists()
+        assert (base_dir / "superset-bugfix%2Fbar").exists()
+        assert not old1.exists()
+        assert not old2.exists()
+
+        # Should report change
+        assert changed is True
+
+    def test_migrate_skip_if_new_exists(self, tmp_path):
+        """Should not migrate if new path already exists."""
+        base_dir = tmp_path / "code"
+        base_dir.mkdir(parents=True)
+
+        # Create both old and new paths
+        old_path = base_dir / "preset-feature__foo"
+        new_path = base_dir / "preset-feature%2Ffoo"
+        old_path.mkdir()
+        new_path.mkdir()
+        (old_path / "old.txt").write_text("old")
+        (new_path / "new.txt").write_text("new")
+
+        config = {
+            "base_dir": str(base_dir),
+            "worktrees": {
+                "preset::feature/foo": {"repo": "preset", "branch": "feature/foo", "pr": None},
+            },
+        }
+
+        from repo_cli.config import migrate_worktree_paths
+
+        _, changed = migrate_worktree_paths(config)
+
+        # Both should still exist (no migration)
+        assert old_path.exists()
+        assert new_path.exists()
+        assert (old_path / "old.txt").exists()
+        assert (new_path / "new.txt").exists()
+
+        # Should not report change (migration skipped)
+        assert changed is False
+
+    def test_migrate_no_base_dir(self):
+        """Should handle config without base_dir gracefully."""
+        config = {
+            "worktrees": {
+                "preset::feature/foo": {"repo": "preset", "branch": "feature/foo", "pr": None},
+            },
+        }
+
+        from repo_cli.config import migrate_worktree_paths
+
+        result, changed = migrate_worktree_paths(config)
+
+        # Should return config unchanged
+        assert result == config
+
+        # Should not report change (no base_dir)
+        assert changed is False

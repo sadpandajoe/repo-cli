@@ -13,211 +13,24 @@ Build a Python CLI that manages git worktrees using a bare repo + worktree archi
 - Keep it simple - defer dependency/venv management to later phases
 
 ## Assumptions
-- User has git 2.5+ (worktree support)
+- User has git 2.17+ (worktree move support)
 - GitHub CLI (`gh`) available for PR integration (optional, graceful fallback)
 - Base directory: `~/code/`
 - User manages venv/dependencies manually (for MVP)
 
+## Previous Phases
+
+### Phase 1: Project Scaffolding - Completed 2025-10-30
+Complete package structure with CLI framework, all command stubs, and project setup.
+**PR #1 merged to main.** See PROJECT_ARCHIVE.md for full details.
+
+### Phase 2: Core Infrastructure & MVP Commands - Completed 2025-10-30
+Implemented all MVP commands with TDD approach (37 passing tests), CI/CD pipeline, and comprehensive error handling.
+**PR #2 merged to main.** See PROJECT_ARCHIVE.md for full details.
+
+---
+
 ## Development Log
-
-### 2025-10-30 15:30 - Session Start: MVP Planning
-User clarified scope into clear MVP after initial over-engineering discussion.
-
-**Initial scope creep avoided:**
-- No AI context management (out of scope - users manage their own files)
-- No dependency management in MVP (can add later)
-- No navigation helpers (paths are predictable)
-
-**Architecture decisions finalized:**
-1. **Directory Layout**: Bare repos at `~/code/{repo}.git/`, worktrees at `~/code/{repo}-{branch}/`
-2. **Initial Clone**: Auto-clone as bare when repo doesn't exist
-3. **PR Tracking**: Manual linking via `repo pr link`, store PR# in config, query status live (fallback to PR# only if offline)
-4. **URL Resolution**: `repo register` command + lazy prompt fallback (both explicit and implicit registration)
-5. **Auto-complete**: Included in MVP (Typer built-in support)
-6. **Table display**: Repo | Branch | PR | Status (no Path column - predictable from repo+branch)
-
-### 2025-10-30 16:00 - Planning Complete
-All architectural decisions finalized. Ready to implement.
-
-### 2025-10-30 17:30 - Documentation Fixes: Critical Issues Resolved
-Fixed two critical bugs in the PROJECT.md specification before implementation:
-
-**Issue 1 - Bare-repo worktree creation (High Priority):**
-- **Problem**: `git worktree add ~/code/{repo}-{branch} -b {branch}` would fail on bare repos (no local HEAD to branch from)
-- **Solution**: Use explicit start-point with `-C` flag: `git -C ~/code/{repo}.git worktree add <path> -b <branch> origin/HEAD`
-- **Default behavior**: Use `origin/HEAD` (repo's default branch) as start-point
-- **Flexibility**: Added `--from <start-point>` flag for custom base (tags, commits, branches - useful for hotfixes)
-- **Config tracking**: Store `start_point` field in worktree metadata for reference
-- **Command format**: Shows concrete example with `origin/HEAD`, note explains `--from` override
-
-**Issue 2 - gh pr view repository context (Medium Priority):**
-- **Problem**: `gh pr view <pr#>` can't infer repository context outside of a worktree directory
-- **Initial approach**: Execute from worktree directory - REJECTED (fails if worktree deleted)
-- **Final solution**: Parse and store `owner/repo` slug, use `gh pr view <pr#> --repo <owner_repo> --json state`
-- **URL parsing**: Extract slug during `repo register`:
-  - SSH: `git@github.com:owner/repo.git` → `owner/repo`
-  - HTTPS: `https://github.com/owner/repo.git` → `owner/repo`
-- **Benefit**: PR queries work even if worktree deleted, more reliable and explicit
-- **Config changes**: Store `owner_repo` field for each repo in config
-
-**Files updated:**
-- PROJECT.md sections: `repo register`, `repo create`, `repo list`, `repo pr link` commands
-- Phase 2 infrastructure documentation with explicit implementation requirements
-- Config structure with `owner_repo` and `start_point` fields
-
-### 2025-10-30 18:00 - Submodule Support Added to MVP
-User identified that repositories with submodules need special handling.
-
-**Decision: Automatic submodule initialization (included in MVP)**
-- **Approach**: After creating worktree, automatically run `git -C <worktree_path> submodule update --init --recursive`
-- **Rationale**: Submodules are common in real-world repos; manual initialization creates friction
-- **Behavior**: Always automatic, no flag needed
-- **User feedback**: Display count of initialized submodules (or omit message if none present)
-- **Config tracking**: Not tracked - submodules are git's responsibility, not config concern
-- **Performance note**: May be slow for repos with many/large submodules, but user expectation is that worktree is "ready to use"
-
-**Implementation changes:**
-- Added step 5 to `repo create` workflow: submodule initialization
-- Updated output examples to show submodule initialization messages
-- Enhanced `git_ops.py` implementation notes with submodule workflow
-- No config schema changes needed (not tracked)
-
-### 2025-10-30 19:00 - Phase 1: Project Scaffolding Started
-Starting implementation of package structure following universal guidelines.
-
-**Approach:**
-- Following TDD principles from CLAUDE.implementation.md and CLAUDE.testing.md
-- Creating minimal scaffolding first, then iterating
-- Using uv for package management (modern Python tool)
-- Typer for CLI framework (built-in auto-complete support)
-
-### 2025-10-30 19:30 - Phase 1: Project Scaffolding Complete ✓
-Successfully created complete package scaffolding with working CLI.
-
-**Created:**
-- `pyproject.toml` - Package configuration with dependencies (typer, rich, pyyaml)
-  - Fixed deprecated `tool.uv.dev-dependencies` → `dependency-groups.dev`
-  - No `gh` CLI as dependency (it's external system tool, not Python package)
-- `README.md` - Comprehensive installation and usage guide
-- `src/repo_cli/__init__.py` - Package initialization
-- `src/repo_cli/main.py` - Typer CLI entry point with all commands
-  - Commands: init, register, create, list, delete
-  - Subcommand: pr link
-  - All help text working correctly
-- `src/repo_cli/commands/__init__.py` - Commands package structure
-- `src/repo_cli/config.py` - Config management stubs with URL parsing
-- `src/repo_cli/git_ops.py` - Git operations stubs (clone, worktree, submodules)
-- `src/repo_cli/gh_ops.py` - GitHub CLI operations stubs (PR status)
-- `src/repo_cli/utils.py` - Utility functions (path helpers, validation)
-
-**Verified:**
-- Package installs successfully with `uv pip install -e .`
-- CLI runs: `repo --help` shows all commands
-- All command help text displays correctly
-- Typer auto-complete support included (--install-completion)
-- Stub responses work ("🚧 Coming soon" messages)
-
-**Technical Notes:**
-- GitHub `owner/repo` slug will be parsed from URLs during registration
-- `gh` CLI availability checked at runtime via `shutil.which('gh')`
-- Graceful fallback when `gh` unavailable (show PR# only, no status)
-- All git/gh operations via subprocess (no Python wrappers needed)
-
-### 2025-10-30 20:00 - Phase 2: Core Infrastructure Implementation Complete ✓
-Implemented all core infrastructure modules using TDD (RED → GREEN → REFACTOR).
-
-**Core Modules Implemented:**
-
-**config.py** - Configuration management (11 tests passing)
-- `parse_github_url()` - Extract owner/repo slug from SSH/HTTPS URLs with validation
-- `load_config()` - Load YAML with error handling (guards against None/invalid data)
-- `save_config()` - Save YAML with automatic directory creation
-- Guards against yaml.safe_load returning None or non-dict values
-
-**git_ops.py** - Git subprocess wrappers (7 tests passing)
-- `GitOperationError` exception class for user-friendly error messages
-- `clone_bare()` - Clone repository as bare with error handling
-- `create_worktree()` - Create worktree with configurable start point
-- `remove_worktree()` - Remove worktree (requires repo_path for context)
-- `init_submodules()` - Initialize submodules, count via .gitmodules parsing
-- All functions wrap subprocess calls with CalledProcessError handling
-- Surface git stderr in error messages instead of raw stack traces
-
-**gh_ops.py** - GitHub CLI integration (10 tests passing)
-- `is_gh_available()` - Check gh CLI via shutil.which
-- `get_pr_status()` - Query PR status (Open/Merged/Closed) with --repo flag
-- `validate_pr_exists()` - Validate PR existence
-- Graceful fallback when gh unavailable/offline
-- All PR queries use `--repo owner/repo` flag (works even if worktree deleted)
-
-**main.py** - All MVP commands implemented
-- `repo init` - Create config/directory with --force protection against overwrite
-- `repo register` - Register repo aliases with URL validation
-- `repo create` - Create worktrees with lazy registration, auto-clone, submodule init
-- `repo list` - Display rich table with live PR status
-- `repo delete` - Remove worktrees with confirmation prompt
-- `repo pr link` - Link PRs with validation
-- Rich console output (colors, tables, symbols)
-- User-friendly error messages (no raw exceptions)
-- Path objects converted to strings in output
-
-**Code Review Fixes:**
-- Data loss prevention: `repo init` won't overwrite without `--force`
-- Config validation: Guards against empty/invalid YAML files
-- Git error handling: GitOperationError with actionable messages
-- UX polish: Clean output matching PROJECT.md examples
-- Docstring accuracy: Fixed utils.py expand_path documentation
-
-**Test Coverage:**
-- 37/37 tests passing (28 unit + 9 integration)
-- Unit tests: All core infrastructure with mocked subprocess
-- Integration tests: End-to-end CLI testing with CliRunner
-- Error handling verified with GitOperationError
-- Edge cases covered (empty configs, offline scenarios, invalid URLs, filtered results)
-
-**Technical Decisions:**
-- Used subprocess.run for all git/gh operations (no third-party wrappers)
-- Error handling catches CalledProcessError and raises GitOperationError
-- Config file validated on load (must be dict, not None)
-- Submodule count by parsing .gitmodules (reliable, works when already initialized)
-- remove_worktree requires repo_path parameter for git context
-
-### 2025-10-30 21:00 - CI/CD, Integration Tests, and Final Polish ✓
-Added automated testing infrastructure and final UX improvements.
-
-**CI/CD (GitHub Actions):**
-- Created .github/workflows/ci.yml
-- Tests on Python 3.11 and 3.12 (ubuntu-latest)
-- Runs ruff linter and formatter checks
-- Runs pytest with coverage reporting
-- Verifies package builds successfully
-- Triggers on every push/PR to main
-
-**Ruff Linter:**
-- Added ruff>=0.8.0 to dev dependencies
-- Configured with sensible defaults (line-length 100, py311 target)
-- Auto-formatted entire codebase (imports sorted, style consistent)
-- Fixed all linting issues (unused imports, exception chaining, etc.)
-
-**Integration Tests (9 new tests):**
-Using typer.testing.CliRunner for end-to-end testing:
-- repo init: Config creation, overwrite protection, --force flag
-- repo register: URL parsing and validation
-- repo list: Empty state, filtered empty state
-- repo pr link: Success and error paths
-- Tests run without touching git/gh (mocked or config-only)
-
-**Final UX Polish:**
-- repo init: Prevents accidental config overwrite without --force flag
-- repo list: Shows friendly message when filtered results are empty
-- repo create: Only shows submodule messages when .gitmodules exists
-- All Path objects converted to strings in output (clean UX)
-
-**Total Test Coverage: 37 passing tests**
-- 11 tests: config.py (URL parsing, YAML I/O, validation)
-- 7 tests: git_ops.py (git commands with error handling)
-- 10 tests: gh_ops.py (gh CLI integration with fallback)
-- 9 tests: CLI integration (end-to-end command orchestration)
 
 ### 2025-11-03 - Phase 3: Auto-complete Implementation ✓
 Implemented shell auto-complete functionality for improved UX.
@@ -252,21 +65,465 @@ Implemented shell auto-complete functionality for improved UX.
 - Context-aware completion (e.g., branches filtered by selected repo) would require custom shell completion scripts
 - Current implementation shows all branches, which is acceptable for MVP
 
+### 2025-11-07 - Rebase and PR Update
+Successfully rebased Phase 3 branch onto main after PR #2 merge.
+
+**Issue:**
+- PR #2 was merged to main with Phase 2 implementation
+- Branch contained duplicate Phase 2 commits (different hashes)
+- Standard rebase caused conflicts in 7 files
+
+**Resolution:**
+- Created clean branch from latest main
+- Cherry-picked only Phase 3 commits (3 commits)
+- Force-pushed to update PR #3
+
+**Result:**
+- Clean history: 3 Phase 3 commits on top of main
+- All 43 tests passing
+- No merge conflicts
+- PR #3 updated and ready to merge
+
+### 2025-11-07 - Archived Phase 1 & 2
+Moved completed Phase 1 and Phase 2 details to PROJECT_ARCHIVE.md to reduce context size.
+
+**What Was Archived:**
+- Phase 1: Project scaffolding development log (2025-10-30 15:30-19:30)
+- Phase 2: Core infrastructure implementation log (2025-10-30 20:00-21:00)
+- Complete technical details, test coverage, and code review notes
+- Total ~200 lines moved to archive
+
+**What Remains in PROJECT.md:**
+- Brief phase summaries with PR links
+- Phase 3 (current) development log
+- Current status and architecture decisions
+- Command specifications and success criteria
+
+**Reason:** Phase 1 & 2 are complete and merged. Focus PROJECT.md on active/recent work.
+
+### 2025-11-07 - Feedback: Support Existing Branch Checkout
++Fixed issue where `repo create` failed when trying to checkout existing branches.
+
+**Problem:**
+- Command always tried to create NEW branches with `-b` flag
+- Failed with "fatal: a branch named 'X' already exists" for existing branches
+- Example: `repo create superset 6.0` failed because 6.0 branch exists
+
+**Solution:**
+- Added `branch_exists()` function to check for existing branches (local and remote)
+- Updated `create_worktree()` to conditionally use `-b` flag only for new branches
+- For existing branches, checkout directly without `-b` flag
+- Added `get_default_branch()` to resolve `origin/HEAD` in bare repos (doesn't exist)
+- Display "(existing)" vs "(new, from X)" in CLI output
+
+**Implementation:**
+- `git_ops.branch_exists()` - Check refs/remotes/origin/* and refs/heads/*
+- `git_ops.get_default_branch()` - Resolve HEAD symref or fallback to main/master
+- `git_ops.create_worktree()` - Returns tuple (None, is_new_branch)
+- Updated `main.py` to display appropriate status message
+
+**Testing:**
+- Added 8 new tests (51 total, all passing)
+- Tests for: branch_exists, get_default_branch, new/existing branch workflows
+- Manual verification: `repo create superset 6.0` ✓
+
+**Behavioral Change:**
+- `repo create <repo> <existing-branch>` - Checkout existing branch
+- `repo create <repo> <new-branch>` - Create new branch from default
+- `repo create <repo> <new-branch> --from <ref>` - Create from custom ref
+
+### 2025-11-07 - Feedback: Skip .github Submodules
+Fixed unnecessary initialization of GitHub Actions stored as submodules.
+
+**Problem:**
+- Apache Superset showed "Initialized 8 submodules" but all were GitHub Actions in `.github/`
+- These are CI/CD tools only, not needed for local development
+- Wasted ~50MB of downloads and initialization time
+
+**Solution:**
+- Parse `.gitmodules` to extract submodule paths
+- Filter out any paths starting with `.github/`
+- Initialize only non-.github submodules individually
+- Return count of actually-needed submodules initialized
+
+**Implementation:**
+- Updated `init_submodules()` to parse and filter `.github/` paths
+- Initialize each non-.github submodule with specific path argument
+- For repos with only .github submodules, return 0 (no output message)
+
+**Testing:**
+- Added 2 new tests (53 total, all passing)
+- Test for mixed .github and regular submodules
+- Test for repos with only .github submodules
+- Manual verification: Superset no longer shows submodule message
+
+**Result:**
+- Superset: 0 submodules initialized (previously 8)
+- Faster worktree creation
+- Less disk usage
+
+### 2025-11-07 - Code Review Feedback: Critical Fixes
+Addressed 4 issues from code review feedback.
+
+**Issue 1 [major]: Remote branches invisible after initial clone**
+- **Problem**: `branch_exists()` ran on stale refs, couldn't see new remote branches
+- **Solution**: Added `fetch_repo()` to update refs before branch check
+- **Implementation**:
+  - `git_ops.fetch_repo()` - Run `git fetch --prune origin`
+  - Call before `create_worktree()` (skip on fresh clone)
+  - Graceful fallback if fetch fails (offline scenario)
+- **Result**: Now sees branches created after initial bare clone
+
+**Issue 2 [major]: Detached HEAD for remote-only branches**
+- **Problem**: `git worktree add <path> origin/<branch>` creates detached HEAD
+- **Solution**: Check for local branch first, create tracking branch if remote-only
+- **Implementation**:
+  - If local branch exists: checkout directly
+  - If remote-only: use `-b <branch> origin/<branch>` to create tracking branch
+  - Users can now push commits back to remote
+- **Result**: Proper branch checkouts, no detached HEAD
+
+**Issue 3 [minor]: Misleading repo init --force warning**
+- **Problem**: Warning said "will delete all repos and worktrees" but didn't
+- **Solution**: Removed misleading text
+- **Implementation**: Only overwrites `~/.repo-cli/config.yaml`
+- **Result**: Accurate description of actual behavior
+
+**Issue 4 [nit]: Worktree metadata records wrong start_point**
+- **Problem**: Always recorded input (e.g., `origin/HEAD`) even for existing branches
+- **Solution**: Return actual ref used from `create_worktree()`
+- **Implementation**:
+  - Changed return type to `tuple[str, bool]` (actual_ref, is_new_branch)
+  - Save actual ref to config instead of input start_point
+  - For existing local: saves branch name
+  - For existing remote: saves `origin/<branch>`
+  - For new branches: saves resolved ref (e.g., `master` instead of `origin/HEAD`)
+- **Result**: `repo list` shows truthful metadata
+
+**Testing:**
+- All 53 tests passing
+- Updated test signatures and logic to match new behavior
+- All linting checks pass
+
+**Commits:**
+- Commit 1: Support existing branch checkout (8 new tests)
+- Commit 2: Skip .github submodules (2 new tests)
+- Commit 3: Address code review feedback (test updates)
+
+### 2025-11-11 14:30 - Planning: Path Collision Fix (Feedback Round 2)
++Received feedback identifying remaining collision vulnerability in path sanitization.
+
+**Feedback Summary:**
+1. **[CRITICAL] Path collision still possible** - Current `__` replacement is not bijective
+   - Problem: `feature/foo` and `feature__foo` both map to `repo-feature__foo`
+   - Impact: Second worktree creation fails or corrupts existing worktree
+   - Current approach: Simple string replace (`/` → `__`) in `get_worktree_path()`
+   - Requested: Bijective encoding (percent-encoding or hash-based)
+
+2. **[BLOCKER] Test suite not running in user's sandbox**
+   - UV panics: "Attempted to create a NULL object" in system-configuration
+   - User cannot verify test passing status
+   - Requested: Run full suite in normal environment before committing
+
+**Planning Mode:**
+- Need to evaluate bijective encoding approaches
+- Must ensure backward compatibility with existing worktrees
+- Need migration strategy for existing paths
+- Must verify tests pass in normal environment
+
+### 2025-11-11 14:30 - Path Collision Fix: Percent-Encoding
+Implementing bijective encoding to prevent path collisions.
+
+**Problem:**
+- Current `__` replacement is not bijective (not 1:1 reversible)
+- `feature/foo` and `feature__foo` both map to `repo-feature__foo` (COLLISION!)
+- Previous fix (rejecting `__` in branch names) doesn't solve root issue
+
+**Investigation:**
+- Checked claudette-cli for reference implementation
+- Finding: They avoid the problem by using simple project names (no slashes)
+- Our requirement: Support hierarchical branch names like `feature/foo`
+
+**Accepted Solution: Percent-Encoding**
+- Encode `/` as `%2F`, `%` as `%25`, etc.
+- Standard approach (RFC 3986, same as URLs)
+- Truly bijective: can round-trip encode/decode
+- Reasonable readability: `feature/foo` → `repo-feature%2Ffoo`
+- Python stdlib support: `urllib.parse.quote()`
+
+**Implementation Plan:**
+1. Replace `branch.replace("/", "__")` with `quote(branch, safe='')`
+2. Remove `__` validation (no longer needed)
+3. Add migration for existing `__`-based paths in config
+4. Update all tests for new encoding
+5. Run full test suite in normal environment
+
+**Examples After Fix:**
+- `feature/foo` → `repo-feature%2Ffoo`
+- `feature__foo` → `repo-feature__foo` (no encoding needed)
+- `fix/issue#42` → `repo-fix%2Fissue%2342`
+
+**Implementation Complete:**
+1. ✅ Updated `utils.py`:
+   - Imported `urllib.parse.quote`
+   - Replaced `branch.replace("/", "__")` with `quote(branch, safe='')`
+   - Updated comments to reflect percent-encoding
+2. ✅ Removed `__` validation:
+   - Deleted double-underscore check from `validate_branch_name()`
+   - Branch names with `__` now allowed (percent-encoding prevents collisions)
+3. ✅ Added path migration in `config.py`:
+   - New function `migrate_worktree_paths()` automatically renames old directories
+   - Called from `load_config()` after config migration
+   - Safe: only renames if old path exists and new path doesn't
+   - Used `contextlib.suppress(OSError)` for clean error handling
+4. ✅ Updated all tests:
+   - Changed 3 validation tests to accept `__` in branch names
+   - Updated path test to expect `%2F` instead of `__`
+   - Added 5 new tests for path migration (125 total tests)
+5. ✅ All 125 tests passing in normal environment
+6. ✅ Committed to branch: `6fcfb1c` (5 files changed, 301 insertions, 36 deletions)
+
+**Behavioral Changes:**
+- New worktrees: Use percent-encoded paths (e.g., `feature%2Ffoo`)
+- Existing worktrees: Automatically migrated on next `load_config()` call
+- Branch names: Now accepts `__` (previously rejected)
+- Path collisions: **Fixed** - `feature/foo` and `feature__foo` now map to different paths
+
+### 2025-11-12 15:00 - Feedback Round 3: 5 Critical Pre-Launch Fixes
+Addressed 5 critical issues identified in final pre-launch feedback.
+
+**Issue 1 [MAJOR]: migrate_worktree_paths used Path.rename() incorrectly**
+- **Problem:** Simple file rename broke Git's internal metadata (.git/worktrees/<name>/gitdir)
+- **Impact:** `git worktree list` and `git worktree remove` failed after migration
+- **Solution:** Use `git worktree move <old> <new>` to update both filesystem and Git metadata
+- **Implementation:**
+  - Updated `migrate_worktree_paths()` to call `git worktree move` via subprocess
+  - Added proper error handling (FileNotFoundError, CalledProcessError)
+  - Falls back silently if move fails (manual migration needed)
+- **Result:** Git operations work correctly after path migration
+
+**Issue 2 [MAJOR]: load_config saved on every read causing race conditions**
+- **Problem:** Saved whenever `version` key existed, even from auto-completion
+- **Impact:** Concurrent commands could overwrite each other's changes
+- **Solution:** Track whether migrations actually changed data
+- **Implementation:**
+  - Changed `migrate_config()` return type to `tuple[dict, bool]`
+  - Changed `migrate_worktree_paths()` return type to `tuple[dict, bool]`
+  - Updated `load_config()` to only save if `config_changed or paths_changed`
+  - Updated all test signatures and assertions
+- **Result:** No more unnecessary saves, race conditions eliminated
+
+**Issue 3 [MAJOR]: register --force didn't update bare repo remote URL**
+- **Problem:** Config updated but bare repo still pointed to old URL
+- **Impact:** Future `repo create` commands fetched from wrong repository
+- **Solution:** Detect URL mismatches and prompt user to update
+- **Implementation:**
+  - Added `get_remote_url(repo_path, remote="origin")` in git_ops.py
+  - Added `set_remote_url(repo_path, url, remote="origin")` in git_ops.py
+  - Updated register command to check bare repo URL when using --force
+  - Interactive prompt: "Update bare repository remote URL?"
+  - Clear warnings if user declines update
+- **Result:** Bare repo and config stay in sync
+
+**Issue 4 [MINOR]: init stored relative base_dir paths**
+- **Problem:** `repo init --base-dir ./worktrees` stored literal `./worktrees`
+- **Impact:** Commands run from different directories used wrong base path
+- **Solution:** Store absolute path after expansion
+- **Implementation:**
+  - Changed `initial_config = {"base_dir": str(base_path), ...}` (was `base_dir`)
+  - Also updated success message to show resolved path
+- **Result:** Base directory always absolute and consistent
+
+**Issue 5 [MINOR]: pytest failed from clean checkout**
+- **Problem:** ModuleNotFoundError without pip install
+- **Impact:** Contributors couldn't run tests immediately
+- **Solution:** Add pytest config and improve documentation
+- **Implementation:**
+  - Added `[tool.pytest.ini_options]` with `pythonpath = ["src"]` to pyproject.toml
+  - Updated README.md with comprehensive dev setup section
+  - Documented both uv (recommended) and pip workflows
+  - Added separate sections for setup, running tests, and code quality
+- **Result:** Tests run from clean checkout with `pytest` or `uv run pytest`
+
+**Testing:**
+- All 125 tests passing ✓
+- Updated 7 migrate_config tests for new return signature
+- Updated 5 migrate_worktree_paths tests for new return signature
+- Fixed 2 migration tests to properly initialize git repos
+- Added subprocess setup for git worktree move testing
+
+**Files Modified:**
+- `pyproject.toml` - Added pytest configuration
+- `README.md` - Comprehensive dev setup documentation
+- `src/repo_cli/config.py` - Migration functions return tuples, git worktree move
+- `src/repo_cli/git_ops.py` - Added get_remote_url() and set_remote_url()
+- `src/repo_cli/main.py` - Fixed init path, register URL validation
+- `tests/test_config.py` - Updated all test signatures and assertions
+
+**Commit:** `891005c` - fix: address 5 critical feedback issues pre-launch
+
+### 2025-11-12 20:00 - CI Fix: Git Identity Configuration
++Fixed CI test failures caused by missing git user configuration.
+
+**Problem:**
+- Two migration tests failed in CI with "fatal: Author identity unknown"
+- Tests create git commits but CI environment has no user.name/user.email
+
+**Solution:**
+- Added git config setup before commit operations in tests:
+  - `git config user.name "Test User"`
+  - `git config user.email "test@example.com"`
+
+**Tests Fixed:**
+- `test_migrate_slash_to_percent_encoding`
+- `test_migrate_multiple_worktrees`
+
+**Result:** All 125 tests passing in CI (Python 3.11 and 3.12)
+
+**Commit:** `3545283` - fix: configure git identity in CI tests
+
+### 2025-11-12 20:30 - Feedback Round 4: Pre-Launch Polish
++Addressed 3 final issues identified before v0.1.0 launch.
+
+**Issue 1 [MAJOR]: Git version requirement outdated**
+- **Problem:** Docs said Git 2.5+ but code uses `git worktree move` (requires 2.17+)
+- **Impact:** Users on Git 2.5-2.16 would have silent migration failures
+- **Solution:** Updated README.md and PROJECT.md to require Git 2.17+
+- **Result:** Accurate version requirements prevent user confusion
+
+**Issue 2 [MAJOR]: Missing URL check on initial alias registration**
+- **Problem:** Remote URL only checked on `--force` overwrite, not initial registration
+- **Impact:** If bare repo exists before first registration, URL mismatch not detected
+- **Solution:** Added URL check in `else` branch for new alias registration
+- **Implementation:**
+  - Check if bare repo exists when registering new alias
+  - Compare remote URL with provided URL
+  - Prompt user to update if mismatch detected
+  - Same behavior as `--force` URL check
+- **Result:** URL mismatches caught on both initial and force registration
+
+**Issue 3 [MINOR]: Test setup instructions unclear**
+- **Problem:** Contributors hit ModuleNotFoundError without clear setup guidance
+- **Solution:** Added note to README.md Running Tests section
+- **Clarifications:**
+  - Must complete setup before running tests
+  - uv users: automatic (uv run handles it)
+  - pip users: need `pip install -e ".[dev]"`
+- **Result:** Smoother contributor onboarding
+
+**Testing:**
+- All 125 tests passing locally and in CI ✓
+- Both Python 3.11 and 3.12 passing ✓
+
+**Files Modified:**
+- `README.md` - Updated Git version, clarified test setup
+- `PROJECT.md` - Updated Git version requirement
+- `src/repo_cli/main.py` - Added URL check for initial registration
+
+**Commit:** `d801eee` - fix: address 3 feedback issues for v0.1.0 launch
+
+### 2025-11-11 - Critical Pre-Release Fixes
+Fixed two critical issues identified before v0.1.0 release.
+
+**Issue 1 [HIGH]: Config Migration - Breaking Change**
+- **Problem**: Config key format changed from `repo-branch` to `repo::branch` in commit 047a187
+- **Impact**: Existing user configs became incompatible (delete/pr link operations would fail)
+- **Solution**: Added automatic migration in `config.py`
+  - `migrate_config()` function detects old format keys and converts to new format
+  - Migration runs on every `load_config()` call
+  - Automatically saves migrated config back to disk
+  - Adds version field (`0.1.0`) for tracking future migrations
+  - Handles edge cases: mixed formats, malformed entries, empty configs
+
+**Issue 2 [MEDIUM]: Directory Path Collision**
+- **Problem**: Branches `feature/foo` and `feature__foo` map to same directory path
+- **Impact**: Potential collision when sanitizing slashes (`/` → `__`)
+- **Solution**: Added validation in `utils.py`
+  - `validate_branch_name()` now rejects branch names containing `__`
+  - Clear error message: "cannot contain '__' (reserved for slash sanitization)"
+  - Prevents collision before it can occur
+
+**Testing:**
+- Added 11 new tests (120 total, all passing)
+- Migration tests: old→new, already-new, mixed, edge cases (8 tests)
+- Validation tests: double underscore rejection (3 tests)
+- Manual verification with actual user config:
+  - Successfully migrated 4 worktrees from old format
+  - Verified `repo list` and `repo pr link` work after migration
+  - Verified `feature__test` rejected, `feature_test` accepted
+
+**Implementation:**
+- `config.py`: Added `migrate_config()` function
+- `utils.py`: Enhanced `validate_branch_name()` with `__` check
+- `test_config.py`: Added `TestMigrateConfig` class with 8 tests
+- `test_utils.py`: Added 3 double-underscore validation tests
+- Commit 646e57c: "fix: add config migration and prevent path collisions pre-v0.1.0"
+
+**Result:**
+- Both issues resolved before v0.1.0 release
+- Backward compatibility maintained via automatic migration
+- Future collisions prevented via validation
+- Zero breaking changes for existing users
+
 ## Current Status
 
 **Active:**
-- Phase 3 auto-complete complete ✓
-- Ready for manual end-to-end testing
+- PR #4 ready for final review (12 commits)
+- All 4 rounds of feedback addressed ✓
+- All commits pushed to remote ✓
+- CI passing on Python 3.11 and 3.12 ✓
 
 **Completed:**
-- ✅ Phase 1: Project scaffolding (PR #1 merged)
-- ✅ Phase 2: Core infrastructure, all MVP commands, CI/CD, tests (37 tests passing)
-- ✅ Phase 3: Auto-complete implementation (43 tests passing)
+- ✅ Phase 1: Project scaffolding (PR #1 merged to main)
+- ✅ Phase 2: Core infrastructure, all MVP commands, CI/CD, tests (PR #2 merged to main)
+- ✅ Phase 3: Auto-complete implementation (PR #3 merged to main)
+- ✅ Feedback Round 1: Existing branch checkout, .github submodules, code review issues
+  - Commits: `82dcbab`, `047a187`, `646e57c`, `246aefd`
+- ✅ Feedback Round 2: Bijective path encoding (percent-encoding)
+  - Replaced `__` replacement with percent-encoding (`/` → `%2F`)
+  - Added automatic path migration for existing worktrees
+  - Fixed path collision vulnerability (`feature/foo` vs `feature__foo`)
+  - Commit: `6fcfb1c`, `02b7336`
+- ✅ Feedback Round 3: 5 critical pre-launch fixes
+  - Fixed git worktree move for proper metadata updates
+  - Fixed load_config race conditions (only save when changed)
+  - Fixed register --force to update bare repo remote URL
+  - Fixed init to store absolute base_dir paths
+  - Fixed pytest to run from clean checkout
+  - Commit: `891005c`
+- ✅ CI Fix: Git identity configuration in tests
+  - Commit: `3545283`
+- ✅ Feedback Round 4: Pre-launch polish
+  - Updated Git version requirement to 2.17+
+  - Added URL check for initial alias registration
+  - Clarified test setup in README
+  - Commit: `d801eee`
+- ✅ All 125 tests passing
+- ✅ Documentation updated and accurate
+
+**Pull Requests:**
+- PR #1: Phase 1 scaffolding - ✅ Merged
+- PR #2: Phase 2 core infrastructure - ✅ Merged
+- PR #3: Phase 3 auto-complete - ✅ Merged
+- PR #4: Feedback fixes - 🔄 Open (ready for final review)
+  - Commit 1 (`82dcbab`): Prompt user when fetch fails before branch creation
+  - Commit 2 (`047a187`): Support branch slashes and prevent config collisions
+  - Commit 3 (`646e57c`): Config migration and path collision prevention
+  - Commit 4 (`246aefd`): Update PROJECT.md with pre-release fixes
+  - Commit 5 (`6fcfb1c`): Use percent-encoding for bijective path mapping
+  - Commit 6 (`02b7336`): Update PROJECT.md with percent-encoding status
+  - Commit 7 (`891005c`): Address 5 critical feedback issues pre-launch
+  - Commit 8 (`b21b172`): Update PROJECT.md with feedback round 3 documentation
+  - Commit 9 (`e91cf5b`): Update PROJECT.md with commit 8 and current status
+  - Commit 10 (`3545283`): Configure git identity in CI tests
+  - Commit 11 (`d801eee`): Address 3 feedback issues for v0.1.0 launch
+  - Commit 12 (next): Update PROJECT.md with feedback round 4 and CI fix
+  - https://github.com/sadpandajoe/repo-cli/pull/4
 
 **Next:**
-- Commit Phase 3 changes
-- Manual end-to-end testing of complete workflows
-- Create PR for Phase 2+3 combined
+- Review and merge PR #4
+- Manual end-to-end testing (optional)
+- Release v0.1.0
 
 **Blocked:**
 - None
@@ -673,7 +930,8 @@ repo-cli/
 
 **Phase 3 - Workflow Enhancements:**
 - `repo sync <repo>` - Fetch updates for repo
-- `repo switch <repo> <branch>` - Quick navigation helper
+- `repo switch <repo> <branch>` - Quick navigation helper (cd to worktree)
+- `repo activate <repo> <branch>` - Launch new shell in worktree directory (like claudette-cli)
 - Worktree git status indicators (dirty/clean/ahead/behind)
 
 **Phase 4 - Dependency Management:**

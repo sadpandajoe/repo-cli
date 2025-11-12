@@ -63,7 +63,7 @@ def init(
         if config_path.exists() and not force:
             console.print(f"✗ Error: Config already exists at {config_path}", style="red")
             console.print(
-                "ℹ Use --force to overwrite existing config (this will delete all repos and worktrees)",
+                "ℹ Use --force to overwrite existing config",
                 style="yellow",
             )
             sys.exit(1)
@@ -74,15 +74,15 @@ def init(
         # Create base directory
         base_path.mkdir(parents=True, exist_ok=True)
 
-        # Create config
-        initial_config = {"base_dir": base_dir, "repos": {}, "worktrees": {}}
+        # Create config with absolute path
+        initial_config = {"base_dir": str(base_path), "repos": {}, "worktrees": {}}
         config.save_config(initial_config)
 
         if force:
             console.print(f"✓ Overwrote config at {config_path}", style="green")
         else:
             console.print(f"✓ Created config at {config_path}", style="green")
-        console.print(f"✓ Created base directory: {base_dir}", style="green")
+        console.print(f"✓ Created base directory: {base_path}", style="green")
         console.print("ℹ Run 'repo --install-completion' to enable auto-complete", style="blue")
         console.print("ℹ Run 'repo create <name> <branch>' to get started", style="blue")
 
@@ -92,18 +92,95 @@ def init(
 
 
 @app.command()
-def register(alias: str, url: str):
+def register(
+    alias: str,
+    url: str,
+    force: Annotated[bool, typer.Option("--force", help="Overwrite existing alias")] = False,
+):
     """Register a repository alias for easy reference."""
     try:
+        # Validate alias name to prevent path traversal
+        utils.validate_repo_alias(alias)
+
         # Parse GitHub URL to extract owner/repo
         owner_repo = config.parse_github_url(url)
 
         # Load config
         cfg = config.load_config()
 
-        # Add repo
+        # Check if alias already exists
         if "repos" not in cfg:
             cfg["repos"] = {}
+        elif alias in cfg["repos"] and not force:
+            existing_url = cfg["repos"][alias]["url"]
+            console.print(
+                f"✗ Error: Alias '{alias}' already registered to {existing_url}", style="red"
+            )
+            console.print("ℹ Use --force to overwrite existing alias", style="yellow")
+            console.print(
+                "⚠ Warning: Overwriting will affect all existing worktrees using this alias",
+                style="yellow",
+            )
+            sys.exit(1)
+
+        # Add or update repo
+        if alias in cfg["repos"] and force:
+            old_url = cfg["repos"][alias]["url"]
+            console.print(f"⚠ Overwriting '{alias}' (was: {old_url})", style="yellow")
+
+            # Check if bare repo exists and has different URL
+            base_dir = utils.expand_path(cfg["base_dir"])
+            bare_repo_path = utils.get_bare_repo_path(base_dir, alias)
+
+            if bare_repo_path.exists() and old_url != url:
+                try:
+                    current_url = git_ops.get_remote_url(bare_repo_path)
+                    if current_url != url:
+                        console.print(
+                            "⚠ Bare repository remote URL mismatch:",
+                            style="yellow",
+                        )
+                        console.print(f"  Current: {current_url}", style="yellow")
+                        console.print(f"  New:     {url}", style="yellow")
+
+                        if typer.confirm("Update bare repository remote URL?"):
+                            git_ops.set_remote_url(bare_repo_path, url)
+                            console.print("✓ Updated bare repository remote URL", style="green")
+                        else:
+                            console.print(
+                                "⚠ Warning: Bare repo URL not updated. "
+                                "Future operations may fetch from wrong repository.",
+                                style="yellow",
+                            )
+                except git_ops.GitOperationError as e:
+                    console.print(f"⚠ Warning: Could not check bare repo URL: {e}", style="yellow")
+        else:
+            # New alias registration - check if bare repo already exists with different URL
+            base_dir = utils.expand_path(cfg["base_dir"])
+            bare_repo_path = utils.get_bare_repo_path(base_dir, alias)
+
+            if bare_repo_path.exists():
+                try:
+                    current_url = git_ops.get_remote_url(bare_repo_path)
+                    if current_url != url:
+                        console.print(
+                            "⚠ Bare repository already exists with different URL:",
+                            style="yellow",
+                        )
+                        console.print(f"  Current: {current_url}", style="yellow")
+                        console.print(f"  New:     {url}", style="yellow")
+
+                        if typer.confirm("Update bare repository remote URL?"):
+                            git_ops.set_remote_url(bare_repo_path, url)
+                            console.print("✓ Updated bare repository remote URL", style="green")
+                        else:
+                            console.print(
+                                "⚠ Warning: Bare repo URL not updated. "
+                                "Future operations may fetch from wrong repository.",
+                                style="yellow",
+                            )
+                except git_ops.GitOperationError as e:
+                    console.print(f"⚠ Warning: Could not check bare repo URL: {e}", style="yellow")
 
         cfg["repos"][alias] = {"url": url, "owner_repo": owner_repo}
 
@@ -134,6 +211,14 @@ def create(
 ):
     """Create a new worktree for a branch."""
     try:
+        # Validate inputs to prevent path traversal
+        try:
+            utils.validate_repo_alias(repo)
+            utils.validate_branch_name(branch)
+        except ValueError as e:
+            console.print(f"✗ Error: {e}", style="red")
+            sys.exit(1)
+
         # Load config
         try:
             cfg = config.load_config()
@@ -174,6 +259,24 @@ def create(
             except git_ops.GitOperationError as e:
                 console.print(f"✗ {e}", style="red")
                 sys.exit(1)
+        else:
+            # Fetch latest refs so we can see new remote branches
+            try:
+                git_ops.fetch_repo(bare_repo_path)
+            except git_ops.GitOperationError as e:
+                console.print(f"⚠ Warning: Failed to fetch from remote: {e}", style="yellow")
+                console.print(
+                    "⚠ Branch information may be stale. If the branch exists on remote,",
+                    style="yellow",
+                )
+                console.print(
+                    "   creating it now will result in a diverged branch.",
+                    style="yellow",
+                )
+                # Prompt user to continue with potentially stale refs
+                if not typer.confirm("Do you want to create the branch anyway?"):
+                    console.print("Cancelled", style="yellow")
+                    sys.exit(0)
 
         # Determine start point
         start_point = from_ref if from_ref else "origin/HEAD"
@@ -181,13 +284,23 @@ def create(
         # Create worktree
         console.print(f"✓ Creating worktree: {str(worktree_path)}", style="cyan")
         try:
-            git_ops.create_worktree(bare_repo_path, worktree_path, branch, start_point)
+            actual_ref, is_new_branch = git_ops.create_worktree(
+                bare_repo_path, worktree_path, branch, start_point
+            )
         except git_ops.GitOperationError as e:
             console.print(f"✗ {e}", style="red")
             sys.exit(1)
 
         console.print(f"✓ Created worktree: {str(worktree_path)}", style="green")
-        console.print(f"✓ Branch: {branch} (new, from {start_point})", style="green")
+        if is_new_branch:
+            console.print(f"✓ Branch: {branch} (new, from {actual_ref})", style="green")
+        else:
+            console.print(f"✓ Branch: {branch} (existing)", style="green")
+
+        # Show navigation hint
+        console.print("")
+        console.print(f"  cd {str(worktree_path)}", style="cyan bold")
+        console.print("")
 
         # Initialize submodules (only if .gitmodules exists)
         gitmodules_path = worktree_path / ".gitmodules"
@@ -200,15 +313,15 @@ def create(
             except git_ops.GitOperationError as e:
                 console.print(f"⚠ Warning: {e}", style="yellow")
 
-        # Save worktree metadata
-        worktree_key = f"{repo}-{branch}"
+        # Save worktree metadata (use :: delimiter to prevent collisions)
+        worktree_key = f"{repo}::{branch}"
         if "worktrees" not in cfg:
             cfg["worktrees"] = {}
         cfg["worktrees"][worktree_key] = {
             "repo": repo,
             "branch": branch,
             "pr": None,
-            "start_point": start_point,
+            "start_point": actual_ref,  # Use actual ref that was checked out
             "created_at": datetime.now().isoformat(),
         }
         config.save_config(cfg)
@@ -301,16 +414,16 @@ def delete(
             sys.exit(1)
 
         base_dir = utils.expand_path(cfg["base_dir"])
-        worktree_key = f"{repo}-{branch}"
+        worktree_key = f"{repo}::{branch}"
 
         # Check if worktree exists in config
         if worktree_key not in cfg.get("worktrees", {}):
-            console.print(f"✗ Error: Worktree '{worktree_key}' not found in config", style="red")
+            console.print(f"✗ Error: Worktree '{repo}/{branch}' not found in config", style="red")
             sys.exit(1)
 
         # Confirm deletion unless --force
         if not force:
-            confirm = typer.confirm(f"⚠ Delete worktree '{worktree_key}'?")
+            confirm = typer.confirm(f"⚠ Delete worktree '{repo}/{branch}'?")
             if not confirm:
                 console.print("Cancelled", style="yellow")
                 return
@@ -357,11 +470,11 @@ def pr_link(
             console.print("✗ Error: Config not found. Run 'repo init' first", style="red")
             sys.exit(1)
 
-        worktree_key = f"{repo}-{branch}"
+        worktree_key = f"{repo}::{branch}"
 
         # Check if worktree exists
         if worktree_key not in cfg.get("worktrees", {}):
-            console.print(f"✗ Error: Worktree '{worktree_key}' not found", style="red")
+            console.print(f"✗ Error: Worktree '{repo}/{branch}' not found", style="red")
             sys.exit(1)
 
         # Get owner/repo for validation
@@ -381,7 +494,7 @@ def pr_link(
         cfg["worktrees"][worktree_key]["pr"] = pr_number
         config.save_config(cfg)
 
-        console.print(f"✓ Linked PR #{pr_number} to {worktree_key}", style="green")
+        console.print(f"✓ Linked PR #{pr_number} to {repo}/{branch}", style="green")
 
     except Exception as e:
         console.print(f"✗ Error: {e}", style="red")

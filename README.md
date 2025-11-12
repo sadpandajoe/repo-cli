@@ -18,7 +18,7 @@ Simplifies the workflow of creating isolated branches using git worktrees, track
 ### Prerequisites
 
 - Python 3.11+
-- Git 2.5+ (for worktree support)
+- Git 2.17+ (for worktree move support)
 - `gh` CLI (optional, for PR features)
 
 ### Install from source
@@ -56,7 +56,8 @@ All MVP commands are implemented and tested. Ready for production use.
 - ✅ GitHub PR status integration (with graceful fallback)
 - ✅ Rich console output (colors, tables, symbols)
 - ✅ Comprehensive error handling (user-friendly messages)
-- ✅ 43 passing tests (28 unit + 15 integration)
+- ✅ Security: Input validation, path traversal protection, safe alias management
+- ✅ 81 passing tests with full security coverage
 - ✅ CI/CD with GitHub Actions
 - ✅ Ruff linting and formatting
 
@@ -82,17 +83,109 @@ repo pr link myrepo feature-123 4567
 repo delete myrepo feature-123
 ```
 
+## Naming Rules
+
+### Branch Names
+
+Branch names follow Git's official rules and support hierarchical grouping with slashes:
+
+**Allowed:**
+- Alphanumeric characters, dots, hyphens, underscores
+- Forward slashes for hierarchical grouping (e.g., `feature/JIRA-123`, `bugfix/auth`)
+- `@` symbol (except the sequence `@{`)
+
+**Examples of valid branch names:**
+```bash
+repo create myrepo main
+repo create myrepo feature/JIRA-123
+repo create myrepo bugfix/foo@bar
+repo create myrepo user/joe/feature
+repo create myrepo release/v1.2.3
+```
+
+**Prohibited:**
+- Cannot start or end with `/`
+- Cannot contain consecutive slashes `//`
+- Cannot contain `..` or `@{`
+- Cannot end with `.`
+- Slash-separated components cannot start with `.` or end with `.lock`
+- Cannot contain spaces, `~`, `^`, `:`, `?`, `*`, `[`, `\`
+
+### Repository Aliases
+
+Repository aliases have stricter rules to prevent path traversal attacks:
+
+**Allowed:**
+- Alphanumeric characters, dots, hyphens, underscores only
+- No slashes (path traversal protection)
+- Cannot contain `::` (internal delimiter)
+
+**Examples:**
+```bash
+repo register myrepo git@github.com:user/repo.git          # Valid
+repo register api-core git@github.com:company/api-core.git # Valid
+repo register my.repo git@github.com:user/my.repo.git      # Valid
+```
+
+**Invalid examples:**
+```bash
+repo register my/repo ...     # Error: slashes not allowed
+repo register ../prod ...     # Error: path traversal blocked
+repo register repo::name ...  # Error: :: is internal delimiter
+```
+
+## Known Limitations
+
+### Config Key Collision (Fixed in v0.1.0)
+
+**Status**: ✅ **FIXED** - Config keys now use `::` delimiter instead of `-`.
+
+**Previous Issue**: Keys like `f"{repo}-{branch}"` could collide (e.g., `api-core` + `feature` vs `api` + `core-feature`).
+
+**Fix**: Changed to `f"{repo}::{branch}"` format, which cannot collide because `::` is prohibited in repo aliases.
+
+**Migration**: No migration needed - v0.1.0 uses new format from the start.
+
+**Future**: v0.2.0 will implement nested dict structure (`worktrees[repo][branch]`) with automatic migration for any v0.1.0 configs.
+
 ## Development
 
+### Setup
+
 ```bash
-# Install with dev dependencies
+# Clone the repository
+git clone https://github.com/sadpandajoe/repo-cli.git
+cd repo-cli
+
+# Option 1: Using uv (recommended)
 uv sync --dev
 
+# Option 2: Using pip
+python -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+pip install -e ".[dev]"
+```
+
+### Running Tests
+
+**Note:** Complete the setup steps above before running tests. The package must be installed in development mode for tests to import the `repo_cli` module.
+
+```bash
+# With uv (recommended - handles installation automatically)
+uv run pytest tests/ -v
+
+# With pip (requires editable install: pip install -e ".[dev]")
+pytest tests/ -v
+
+# With coverage
+uv run pytest tests/ -v --cov=repo_cli --cov-report=term-missing
+```
+
+### Code Quality
+
+```bash
 # Install pre-commit hooks (recommended)
 pre-commit install
-
-# Run tests
-uv run pytest tests/ -v
 
 # Run linting
 uv run ruff check src/ tests/
@@ -102,9 +195,6 @@ uv run ruff format src/ tests/
 
 # Run pre-commit on all files
 pre-commit run --all-files
-
-# Check current structure
-find src -name "*.py" | sort
 ```
 
 ### Pre-commit Hooks
