@@ -362,6 +362,66 @@ Addressed 5 critical issues identified in final pre-launch feedback.
 
 **Commit:** `891005c` - fix: address 5 critical feedback issues pre-launch
 
+### 2025-11-12 20:00 - CI Fix: Git Identity Configuration
++Fixed CI test failures caused by missing git user configuration.
+
+**Problem:**
+- Two migration tests failed in CI with "fatal: Author identity unknown"
+- Tests create git commits but CI environment has no user.name/user.email
+
+**Solution:**
+- Added git config setup before commit operations in tests:
+  - `git config user.name "Test User"`
+  - `git config user.email "test@example.com"`
+
+**Tests Fixed:**
+- `test_migrate_slash_to_percent_encoding`
+- `test_migrate_multiple_worktrees`
+
+**Result:** All 125 tests passing in CI (Python 3.11 and 3.12)
+
+**Commit:** `3545283` - fix: configure git identity in CI tests
+
+### 2025-11-12 20:30 - Feedback Round 4: Pre-Launch Polish
++Addressed 3 final issues identified before v0.1.0 launch.
+
+**Issue 1 [MAJOR]: Git version requirement outdated**
+- **Problem:** Docs said Git 2.5+ but code uses `git worktree move` (requires 2.17+)
+- **Impact:** Users on Git 2.5-2.16 would have silent migration failures
+- **Solution:** Updated README.md and PROJECT.md to require Git 2.17+
+- **Result:** Accurate version requirements prevent user confusion
+
+**Issue 2 [MAJOR]: Missing URL check on initial alias registration**
+- **Problem:** Remote URL only checked on `--force` overwrite, not initial registration
+- **Impact:** If bare repo exists before first registration, URL mismatch not detected
+- **Solution:** Added URL check in `else` branch for new alias registration
+- **Implementation:**
+  - Check if bare repo exists when registering new alias
+  - Compare remote URL with provided URL
+  - Prompt user to update if mismatch detected
+  - Same behavior as `--force` URL check
+- **Result:** URL mismatches caught on both initial and force registration
+
+**Issue 3 [MINOR]: Test setup instructions unclear**
+- **Problem:** Contributors hit ModuleNotFoundError without clear setup guidance
+- **Solution:** Added note to README.md Running Tests section
+- **Clarifications:**
+  - Must complete setup before running tests
+  - uv users: automatic (uv run handles it)
+  - pip users: need `pip install -e ".[dev]"`
+- **Result:** Smoother contributor onboarding
+
+**Testing:**
+- All 125 tests passing locally and in CI ✓
+- Both Python 3.11 and 3.12 passing ✓
+
+**Files Modified:**
+- `README.md` - Updated Git version, clarified test setup
+- `PROJECT.md` - Updated Git version requirement
+- `src/repo_cli/main.py` - Added URL check for initial registration
+
+**Commit:** `d801eee` - fix: address 3 feedback issues for v0.1.0 launch
+
 ### 2025-11-11 - Critical Pre-Release Fixes
 Fixed two critical issues identified before v0.1.0 release.
 
@@ -408,9 +468,10 @@ Fixed two critical issues identified before v0.1.0 release.
 ## Current Status
 
 **Active:**
-- PR #4 ready for final review (8 commits)
-- All 3 rounds of feedback addressed ✓
+- PR #4 ready for final review (12 commits)
+- All 4 rounds of feedback addressed ✓
 - All commits pushed to remote ✓
+- CI passing on Python 3.11 and 3.12 ✓
 
 **Completed:**
 - ✅ Phase 1: Project scaffolding (PR #1 merged to main)
@@ -430,6 +491,13 @@ Fixed two critical issues identified before v0.1.0 release.
   - Fixed init to store absolute base_dir paths
   - Fixed pytest to run from clean checkout
   - Commit: `891005c`
+- ✅ CI Fix: Git identity configuration in tests
+  - Commit: `3545283`
+- ✅ Feedback Round 4: Pre-launch polish
+  - Updated Git version requirement to 2.17+
+  - Added URL check for initial alias registration
+  - Clarified test setup in README
+  - Commit: `d801eee`
 - ✅ All 125 tests passing
 - ✅ Documentation updated and accurate
 
@@ -446,6 +514,10 @@ Fixed two critical issues identified before v0.1.0 release.
   - Commit 6 (`02b7336`): Update PROJECT.md with percent-encoding status
   - Commit 7 (`891005c`): Address 5 critical feedback issues pre-launch
   - Commit 8 (`b21b172`): Update PROJECT.md with feedback round 3 documentation
+  - Commit 9 (`e91cf5b`): Update PROJECT.md with commit 8 and current status
+  - Commit 10 (`3545283`): Configure git identity in CI tests
+  - Commit 11 (`d801eee`): Address 3 feedback issues for v0.1.0 launch
+  - Commit 12 (next): Update PROJECT.md with feedback round 4 and CI fix
   - https://github.com/sadpandajoe/repo-cli/pull/4
 
 **Next:**
