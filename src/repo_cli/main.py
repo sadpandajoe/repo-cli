@@ -4,6 +4,7 @@ import platform
 import subprocess
 import sys
 from datetime import datetime
+from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -709,6 +710,208 @@ def doctor():
         console.print("  • Update Git: https://git-scm.com/downloads")
         console.print("  • Install gh: https://cli.github.com/")
         console.print("  • Run: repo init --base-dir ~/code")
+
+
+@app.command(name="upgrade-check")
+def upgrade_check():
+    """Check if a newer version of repo-cli is available."""
+    try:
+        import repo_cli
+
+        # Get installation directory
+        install_dir = Path(repo_cli.__file__).parent.parent.parent
+
+        console.print("[bold cyan]Checking for updates...[/bold cyan]")
+        console.print()
+
+        # Verify it's a git repository
+        git_dir = install_dir / ".git"
+        if not git_dir.exists():
+            console.print("✗ Not installed from git. Unable to check for updates.", style="red")
+            console.print(f"  Installation directory: {install_dir}", style="yellow")
+            sys.exit(1)
+
+        console.print(f"📂 Installation: {install_dir}", style="cyan")
+
+        # Get current version
+        from repo_cli import __version__
+
+        current_version = __version__
+        console.print(f"📌 Current version: {current_version}")
+
+        # Get current branch
+        try:
+            current_branch = git_ops.get_current_branch(install_dir)
+            console.print(f"🌿 Current branch: {current_branch}")
+        except git_ops.GitOperationError as e:
+            console.print(f"⚠ Warning: {e}", style="yellow")
+            current_branch = "unknown"
+
+        # Check for uncommitted changes
+        try:
+            if git_ops.has_uncommitted_changes(install_dir):
+                console.print(
+                    "⚠ Warning: You have uncommitted changes in the installation directory",
+                    style="yellow",
+                )
+        except git_ops.GitOperationError:
+            pass
+
+        # Get latest tag from remote
+        console.print()
+        console.print("Fetching latest version from remote...", style="cyan")
+        try:
+            latest_tag = git_ops.get_latest_tag(install_dir)
+
+            if not latest_tag:
+                console.print("ℹ No version tags found on remote", style="yellow")
+                console.print("  You may be on the latest development version")
+            else:
+                # Remove 'v' prefix if present for comparison
+                latest_version = latest_tag.lstrip("v")
+                console.print(f"📦 Latest version: {latest_version}")
+
+                if latest_version > current_version:
+                    console.print()
+                    console.print(
+                        f"[bold green]✓ Update available: {current_version} → {latest_version}[/bold green]"
+                    )
+                    console.print()
+                    console.print("Run 'repo upgrade' to update", style="cyan bold")
+                elif latest_version == current_version:
+                    console.print()
+                    console.print("[bold green]✓ You are on the latest version![/bold green]")
+                else:
+                    console.print()
+                    console.print(
+                        f"ℹ You are ahead of the latest release ({current_version} > {latest_version})",
+                        style="yellow",
+                    )
+                    console.print("  You may be on a development branch")
+
+        except git_ops.GitOperationError as e:
+            console.print(f"✗ Failed to check for updates: {e}", style="red")
+            sys.exit(1)
+
+    except Exception as e:
+        console.print(f"✗ Error: {e}", style="red")
+        sys.exit(1)
+
+
+@app.command()
+def upgrade(force: Annotated[bool, typer.Option("--force", help="Skip safety checks")] = False):
+    """Upgrade repo-cli to the latest version."""
+    try:
+        import shutil
+
+        import repo_cli
+
+        # Get installation directory
+        install_dir = Path(repo_cli.__file__).parent.parent.parent
+
+        console.print("[bold cyan]Upgrading repo-cli...[/bold cyan]")
+        console.print()
+
+        # Verify it's a git repository
+        git_dir = install_dir / ".git"
+        if not git_dir.exists():
+            console.print("✗ Not installed from git. Unable to upgrade automatically.", style="red")
+            console.print(f"  Installation directory: {install_dir}", style="yellow")
+            sys.exit(1)
+
+        console.print(f"📂 Installation: {install_dir}", style="cyan")
+
+        # Get current version
+        from repo_cli import __version__
+
+        current_version = __version__
+        console.print(f"📌 Current version: {current_version}")
+
+        # Safety checks (unless --force)
+        if not force:
+            # Check for uncommitted changes
+            try:
+                if git_ops.has_uncommitted_changes(install_dir):
+                    console.print()
+                    console.print(
+                        "⚠ Warning: You have uncommitted changes in the installation directory",
+                        style="yellow",
+                    )
+                    if not typer.confirm("Continue anyway?"):
+                        console.print("Cancelled", style="yellow")
+                        sys.exit(0)
+            except git_ops.GitOperationError as e:
+                console.print(f"⚠ Warning: Could not check git status: {e}", style="yellow")
+
+            # Check current branch
+            try:
+                current_branch = git_ops.get_current_branch(install_dir)
+                if current_branch not in ["main", "master"]:
+                    console.print()
+                    console.print(
+                        f"⚠ Warning: You are on branch '{current_branch}' (not main/master)",
+                        style="yellow",
+                    )
+                    if not typer.confirm("Continue anyway?"):
+                        console.print("Cancelled", style="yellow")
+                        sys.exit(0)
+            except git_ops.GitOperationError as e:
+                console.print(f"⚠ Warning: Could not check branch: {e}", style="yellow")
+
+        # Pull latest changes
+        console.print()
+        console.print("Pulling latest changes from remote...", style="cyan")
+        try:
+            current_branch = git_ops.get_current_branch(install_dir)
+            git_ops.pull_latest(install_dir, branch=current_branch)
+            console.print("✓ Pulled latest changes", style="green")
+        except git_ops.GitOperationError as e:
+            console.print(f"✗ Failed to pull changes: {e}", style="red")
+            sys.exit(1)
+
+        # Reinstall dependencies
+        console.print()
+        console.print("Reinstalling dependencies...", style="cyan")
+
+        # Check if uv is available
+        if shutil.which("uv"):
+            try:
+                subprocess.run(
+                    ["uv", "sync"],
+                    cwd=install_dir,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                console.print("✓ Dependencies updated (uv sync)", style="green")
+            except subprocess.CalledProcessError as e:
+                console.print(f"✗ Failed to update dependencies: {e.stderr}", style="red")
+                sys.exit(1)
+        else:
+            # Fallback to pip
+            console.print("ℹ uv not found, using pip", style="yellow")
+            try:
+                subprocess.run(
+                    [sys.executable, "-m", "pip", "install", "-e", "."],
+                    cwd=install_dir,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                console.print("✓ Dependencies updated (pip install)", style="green")
+            except subprocess.CalledProcessError as e:
+                console.print(f"✗ Failed to update dependencies: {e.stderr}", style="red")
+                sys.exit(1)
+
+        # Reload version to show new version
+        console.print()
+        console.print("[bold green]✓ Upgrade complete![/bold green]")
+        console.print()
+        console.print("Run 'repo --version' to verify the new version", style="cyan")
+
+    except Exception as e:
+        console.print(f"✗ Error: {e}", style="red")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

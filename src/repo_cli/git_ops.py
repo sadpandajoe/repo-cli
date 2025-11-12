@@ -377,3 +377,114 @@ def set_remote_url(repo_path: Path, url: str, remote: str = "origin") -> None:
     except subprocess.CalledProcessError as e:
         stderr = e.stderr.strip() if e.stderr else "Unknown error"
         raise GitOperationError(f"Failed to set remote URL: {stderr}") from e
+
+
+def get_latest_tag(repo_path: Path, remote: str = "origin") -> str | None:
+    """Get the latest semver tag from the remote.
+
+    Args:
+        repo_path: Path to the git repository
+        remote: Name of the remote (default: origin)
+
+    Returns:
+        Latest tag string (e.g., "v0.1.0") or None if no tags found
+
+    Raises:
+        GitOperationError: If git operation fails
+    """
+    try:
+        # Fetch tags from remote
+        subprocess.run(
+            ["git", "-C", str(repo_path), "fetch", remote, "--tags"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        # Get latest tag sorted by version
+        result = subprocess.run(
+            ["git", "-C", str(repo_path), "tag", "--list", "--sort=-v:refname"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        tags = result.stdout.strip().split("\n")
+        return tags[0] if tags and tags[0] else None
+
+    except subprocess.CalledProcessError as e:
+        stderr = e.stderr.strip() if e.stderr else "Unknown error"
+        raise GitOperationError(f"Failed to get latest tag: {stderr}") from e
+
+
+def get_current_branch(repo_path: Path) -> str:
+    """Get the current branch name.
+
+    Args:
+        repo_path: Path to the git repository
+
+    Returns:
+        Current branch name
+
+    Raises:
+        GitOperationError: If git operation fails
+    """
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_path), "branch", "--show-current"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return result.stdout.strip()
+    except subprocess.CalledProcessError as e:
+        stderr = e.stderr.strip() if e.stderr else "Unknown error"
+        raise GitOperationError(f"Failed to get current branch: {stderr}") from e
+
+
+def has_uncommitted_changes(repo_path: Path) -> bool:
+    """Check if repository has uncommitted changes.
+
+    Args:
+        repo_path: Path to the git repository
+
+    Returns:
+        True if there are uncommitted changes, False otherwise
+
+    Raises:
+        GitOperationError: If git operation fails
+    """
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_path), "status", "--porcelain"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return bool(result.stdout.strip())
+    except subprocess.CalledProcessError as e:
+        stderr = e.stderr.strip() if e.stderr else "Unknown error"
+        raise GitOperationError(f"Failed to check git status: {stderr}") from e
+
+
+def pull_latest(repo_path: Path, remote: str = "origin", branch: str = "main") -> None:
+    """Pull latest changes from remote.
+
+    Args:
+        repo_path: Path to the git repository
+        remote: Name of the remote (default: origin)
+        branch: Branch to pull (default: main)
+
+    Raises:
+        GitOperationError: If git operation fails
+    """
+    try:
+        subprocess.run(
+            ["git", "-C", str(repo_path), "pull", remote, branch],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError as e:
+        stderr = e.stderr.strip() if e.stderr else "Unknown error"
+        raise GitOperationError(f"Failed to pull latest changes: {stderr}") from e
