@@ -482,3 +482,157 @@ class TestAutoComplete:
         completions = complete_branch()
 
         assert completions == []
+
+
+class TestE2EWorkflow:
+    """End-to-end workflow test simulating fresh installation."""
+
+    def test_complete_workflow_from_fresh_install(self, tmp_path, monkeypatch):
+        """Test complete workflow: init -> register -> create -> list -> activate -> delete."""
+        # Setup paths
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        base_dir = tmp_path / "code"
+        bare_repo_path = base_dir / "testapp.git"
+        worktree_path = base_dir / "testapp-feature-100"
+
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+
+        # Step 1: Initialize (fresh install)
+        result = runner.invoke(app, ["init", "--base-dir", str(base_dir)])
+        assert result.exit_code == 0
+        assert "Created config at" in result.stdout
+        assert config_file.exists()
+        assert base_dir.exists()
+
+        # Step 2: Register a repository
+        result = runner.invoke(app, ["register", "testapp", "git@github.com:user/testapp.git"])
+        assert result.exit_code == 0
+        assert "Registered 'testapp'" in result.stdout
+
+        # Step 3: Create a worktree (this clones the bare repo if needed)
+        with (
+            patch("repo_cli.git_ops.clone_bare") as mock_clone,
+            patch("repo_cli.git_ops.get_default_branch") as mock_default,
+            patch("repo_cli.git_ops.branch_exists") as mock_exists,
+            patch("repo_cli.git_ops.create_worktree") as mock_create,
+            patch("repo_cli.git_ops.init_submodules") as mock_submodules,
+            patch("repo_cli.git_ops.fetch_repo") as mock_fetch,
+        ):
+            mock_clone.return_value = None
+            mock_default.return_value = "main"
+            mock_exists.return_value = False
+            mock_create.return_value = ("origin/main", True)  # (actual_ref, is_new_branch)
+            mock_submodules.return_value = None
+            mock_fetch.return_value = None
+            bare_repo_path.mkdir(parents=True, exist_ok=True)
+            worktree_path.mkdir(parents=True, exist_ok=True)
+
+            result = runner.invoke(app, ["create", "testapp", "feature-100"])
+            assert result.exit_code == 0
+            assert "Created worktree:" in result.stdout
+            assert "feature-100" in result.stdout
+
+        # Verify worktree was added to config
+        cfg = config.load_config()
+        assert "testapp::feature-100" in cfg.get("worktrees", {})
+
+        # Step 4: List worktrees
+        with (
+            patch("repo_cli.gh_ops.is_gh_available") as mock_gh_available,
+            patch("repo_cli.gh_ops.get_pr_status") as mock_pr_status,
+        ):
+            mock_gh_available.return_value = False
+            mock_pr_status.return_value = "open"
+
+            result = runner.invoke(app, ["list"])
+            assert result.exit_code == 0
+            assert "testapp" in result.stdout
+            assert "feature-100" in result.stdout
+
+        # Step 5: Activate worktree (test both modes)
+        # Test normal mode
+        result = runner.invoke(app, ["activate", "testapp", "feature-100"])
+        assert result.exit_code == 0
+        assert "Worktree path:" in result.stdout
+        # Check path is in output (may be split across lines due to Rich formatting)
+        assert "testapp-feature-100" in result.stdout
+
+        # Test print-only mode
+        result = runner.invoke(app, ["activate", "testapp", "feature-100", "--print"])
+        assert result.exit_code == 0
+        assert "testapp-feature-100" in result.stdout
+        assert "Worktree path:" not in result.stdout  # Should be plain output
+
+        # Step 6: Link a PR
+        with (
+            patch("repo_cli.gh_ops.is_gh_available") as mock_gh_available,
+            patch("repo_cli.gh_ops.validate_pr_exists") as mock_validate,
+            patch("repo_cli.gh_ops.get_pr_status") as mock_pr_status,
+        ):
+            mock_gh_available.return_value = True
+            mock_validate.return_value = True
+            mock_pr_status.return_value = "open"
+
+            result = runner.invoke(app, ["pr", "link", "testapp", "feature-100", "123"])
+            assert result.exit_code == 0
+            assert "Linked PR #123" in result.stdout
+
+        # Step 7: Verify PR appears in list
+        with (
+            patch("repo_cli.gh_ops.is_gh_available") as mock_gh_available,
+            patch("repo_cli.gh_ops.get_pr_status") as mock_pr_status,
+        ):
+            mock_gh_available.return_value = True
+            mock_pr_status.return_value = "open"
+
+            result = runner.invoke(app, ["list"])
+            assert result.exit_code == 0
+            assert "123" in result.stdout
+
+        # Step 8: Delete worktree
+        with patch("repo_cli.git_ops.remove_worktree") as mock_remove:
+            mock_remove.return_value = None
+
+            result = runner.invoke(app, ["delete", "testapp", "feature-100", "--force"])
+            assert result.exit_code == 0
+            assert "Removed worktree:" in result.stdout
+
+        # Step 9: Verify worktree is gone
+        with (
+            patch("repo_cli.gh_ops.is_gh_available") as mock_gh_available,
+            patch("repo_cli.gh_ops.get_pr_status") as mock_pr_status,
+        ):
+            mock_gh_available.return_value = False
+            mock_pr_status.return_value = "open"
+
+            result = runner.invoke(app, ["list"])
+            assert result.exit_code == 0
+            # Should show helpful message when empty
+            assert "No worktrees" in result.stdout or "testapp" not in result.stdout
+
+    def test_version_and_doctor_commands(self, tmp_path, monkeypatch):
+        """Test diagnostic commands work correctly."""
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        base_dir = tmp_path / "code"
+
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+
+        # Test --version flag
+        result = runner.invoke(app, ["--version"])
+        assert result.exit_code == 0
+        assert "repo-cli version" in result.stdout
+
+        # Test doctor command (without full config)
+        result = runner.invoke(app, ["doctor"])
+        assert result.exit_code == 0
+        assert "repo-cli Doctor" in result.stdout
+        assert "Checking Git version" in result.stdout
+
+        # Initialize config first
+        result = runner.invoke(app, ["init", "--base-dir", str(base_dir)])
+        assert result.exit_code == 0
+
+        # Test doctor with config
+        result = runner.invoke(app, ["doctor"])
+        assert result.exit_code == 0
+        assert "Config found at" in result.stdout

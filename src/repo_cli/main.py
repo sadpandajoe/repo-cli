@@ -507,6 +507,9 @@ def activate(
             console.print("✗ Error: base_dir not configured", style="red")
             sys.exit(1)
 
+        # Expand base_dir to Path
+        base_dir = utils.expand_path(base_dir)
+
         worktree_key = f"{repo}::{branch}"
 
         # Check if worktree exists in config
