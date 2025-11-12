@@ -45,7 +45,31 @@ You should see the CLI help with available commands.
 
 ## Upgrading
 
-To upgrade to the latest version:
+### Automatic Upgrade (Recommended)
+
+Check for updates and upgrade automatically:
+
+```bash
+# Check if newer version is available
+repo upgrade-check
+
+# Upgrade to the latest version
+repo upgrade
+
+# Skip safety checks (use with caution)
+repo upgrade --force
+```
+
+The upgrade command will:
+- Auto-detect your installation directory
+- Check for uncommitted changes and warn you
+- Pull latest changes from your current branch
+- Reinstall dependencies (using uv or pip)
+- Provide clear progress indicators
+
+### Manual Upgrade
+
+If you prefer manual control:
 
 ```bash
 # If installed with uv
@@ -60,19 +84,19 @@ source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 pip install -e ".[dev]"
 ```
 
-After upgrading, verify the new version:
+### After Upgrading
+
+Verify the new version:
 
 ```bash
 repo --version
 ```
 
-If you encounter any issues after upgrading, run the diagnostic tool:
+If you encounter any issues, run diagnostics:
 
 ```bash
 repo doctor
 ```
-
-This will check your installation, configuration, and dependencies.
 
 ## Current Status
 
@@ -82,7 +106,8 @@ All MVP commands are implemented and tested. Ready for production use.
 
 ### Features
 - ✅ All core commands (init, register, create, list, delete, activate, pr link)
-- ✅ Diagnostic tools (--version, doctor)
+- ✅ Diagnostic tools (--version, doctor, upgrade-check)
+- ✅ Automatic upgrades (upgrade command with safety checks)
 - ✅ Shell auto-complete for repos and branches
 - ✅ Configuration management with YAML persistence
 - ✅ Git worktree operations via subprocess
@@ -107,6 +132,12 @@ repo --version
 
 # Run diagnostics
 repo doctor
+
+# Check for updates
+repo upgrade-check
+
+# Upgrade to latest version
+repo upgrade
 
 # Register a repository
 repo register myrepo git@github.com:user/repo.git
