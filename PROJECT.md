@@ -13,7 +13,7 @@ Build a Python CLI that manages git worktrees using a bare repo + worktree archi
 - Keep it simple - defer dependency/venv management to later phases
 
 ## Assumptions
-- User has git 2.5+ (worktree support)
+- User has git 2.17+ (worktree move support)
 - GitHub CLI (`gh`) available for PR integration (optional, graceful fallback)
 - Base directory: `~/code/`
 - User manages venv/dependencies manually (for MVP)

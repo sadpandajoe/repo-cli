@@ -154,6 +154,33 @@ def register(
                             )
                 except git_ops.GitOperationError as e:
                     console.print(f"⚠ Warning: Could not check bare repo URL: {e}", style="yellow")
+        else:
+            # New alias registration - check if bare repo already exists with different URL
+            base_dir = utils.expand_path(cfg["base_dir"])
+            bare_repo_path = utils.get_bare_repo_path(base_dir, alias)
+
+            if bare_repo_path.exists():
+                try:
+                    current_url = git_ops.get_remote_url(bare_repo_path)
+                    if current_url != url:
+                        console.print(
+                            "⚠ Bare repository already exists with different URL:",
+                            style="yellow",
+                        )
+                        console.print(f"  Current: {current_url}", style="yellow")
+                        console.print(f"  New:     {url}", style="yellow")
+
+                        if typer.confirm("Update bare repository remote URL?"):
+                            git_ops.set_remote_url(bare_repo_path, url)
+                            console.print("✓ Updated bare repository remote URL", style="green")
+                        else:
+                            console.print(
+                                "⚠ Warning: Bare repo URL not updated. "
+                                "Future operations may fetch from wrong repository.",
+                                style="yellow",
+                            )
+                except git_ops.GitOperationError as e:
+                    console.print(f"⚠ Warning: Could not check bare repo URL: {e}", style="yellow")
 
         cfg["repos"][alias] = {"url": url, "owner_repo": owner_repo}
 

@@ -18,7 +18,7 @@ Simplifies the workflow of creating isolated branches using git worktrees, track
 ### Prerequisites
 
 - Python 3.11+
-- Git 2.5+ (for worktree support)
+- Git 2.17+ (for worktree move support)
 - `gh` CLI (optional, for PR features)
 
 ### Install from source
@@ -168,11 +168,13 @@ pip install -e ".[dev]"
 
 ### Running Tests
 
+**Note:** Complete the setup steps above before running tests. The package must be installed in development mode for tests to import the `repo_cli` module.
+
 ```bash
-# With uv (recommended)
+# With uv (recommended - handles installation automatically)
 uv run pytest tests/ -v
 
-# With pip install -e .
+# With pip (requires editable install: pip install -e ".[dev]")
 pytest tests/ -v
 
 # With coverage
