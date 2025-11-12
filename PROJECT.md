@@ -289,6 +289,79 @@ Implementing bijective encoding to prevent path collisions.
 - Branch names: Now accepts `__` (previously rejected)
 - Path collisions: **Fixed** - `feature/foo` and `feature__foo` now map to different paths
 
+### 2025-11-12 15:00 - Feedback Round 3: 5 Critical Pre-Launch Fixes
+Addressed 5 critical issues identified in final pre-launch feedback.
+
+**Issue 1 [MAJOR]: migrate_worktree_paths used Path.rename() incorrectly**
+- **Problem:** Simple file rename broke Git's internal metadata (.git/worktrees/<name>/gitdir)
+- **Impact:** `git worktree list` and `git worktree remove` failed after migration
+- **Solution:** Use `git worktree move <old> <new>` to update both filesystem and Git metadata
+- **Implementation:**
+  - Updated `migrate_worktree_paths()` to call `git worktree move` via subprocess
+  - Added proper error handling (FileNotFoundError, CalledProcessError)
+  - Falls back silently if move fails (manual migration needed)
+- **Result:** Git operations work correctly after path migration
+
+**Issue 2 [MAJOR]: load_config saved on every read causing race conditions**
+- **Problem:** Saved whenever `version` key existed, even from auto-completion
+- **Impact:** Concurrent commands could overwrite each other's changes
+- **Solution:** Track whether migrations actually changed data
+- **Implementation:**
+  - Changed `migrate_config()` return type to `tuple[dict, bool]`
+  - Changed `migrate_worktree_paths()` return type to `tuple[dict, bool]`
+  - Updated `load_config()` to only save if `config_changed or paths_changed`
+  - Updated all test signatures and assertions
+- **Result:** No more unnecessary saves, race conditions eliminated
+
+**Issue 3 [MAJOR]: register --force didn't update bare repo remote URL**
+- **Problem:** Config updated but bare repo still pointed to old URL
+- **Impact:** Future `repo create` commands fetched from wrong repository
+- **Solution:** Detect URL mismatches and prompt user to update
+- **Implementation:**
+  - Added `get_remote_url(repo_path, remote="origin")` in git_ops.py
+  - Added `set_remote_url(repo_path, url, remote="origin")` in git_ops.py
+  - Updated register command to check bare repo URL when using --force
+  - Interactive prompt: "Update bare repository remote URL?"
+  - Clear warnings if user declines update
+- **Result:** Bare repo and config stay in sync
+
+**Issue 4 [MINOR]: init stored relative base_dir paths**
+- **Problem:** `repo init --base-dir ./worktrees` stored literal `./worktrees`
+- **Impact:** Commands run from different directories used wrong base path
+- **Solution:** Store absolute path after expansion
+- **Implementation:**
+  - Changed `initial_config = {"base_dir": str(base_path), ...}` (was `base_dir`)
+  - Also updated success message to show resolved path
+- **Result:** Base directory always absolute and consistent
+
+**Issue 5 [MINOR]: pytest failed from clean checkout**
+- **Problem:** ModuleNotFoundError without pip install
+- **Impact:** Contributors couldn't run tests immediately
+- **Solution:** Add pytest config and improve documentation
+- **Implementation:**
+  - Added `[tool.pytest.ini_options]` with `pythonpath = ["src"]` to pyproject.toml
+  - Updated README.md with comprehensive dev setup section
+  - Documented both uv (recommended) and pip workflows
+  - Added separate sections for setup, running tests, and code quality
+- **Result:** Tests run from clean checkout with `pytest` or `uv run pytest`
+
+**Testing:**
+- All 125 tests passing ✓
+- Updated 7 migrate_config tests for new return signature
+- Updated 5 migrate_worktree_paths tests for new return signature
+- Fixed 2 migration tests to properly initialize git repos
+- Added subprocess setup for git worktree move testing
+
+**Files Modified:**
+- `pyproject.toml` - Added pytest configuration
+- `README.md` - Comprehensive dev setup documentation
+- `src/repo_cli/config.py` - Migration functions return tuples, git worktree move
+- `src/repo_cli/git_ops.py` - Added get_remote_url() and set_remote_url()
+- `src/repo_cli/main.py` - Fixed init path, register URL validation
+- `tests/test_config.py` - Updated all test signatures and assertions
+
+**Commit:** `891005c` - fix: address 5 critical feedback issues pre-launch
+
 ### 2025-11-11 - Critical Pre-Release Fixes
 Fixed two critical issues identified before v0.1.0 release.
 
@@ -335,36 +408,46 @@ Fixed two critical issues identified before v0.1.0 release.
 ## Current Status
 
 **Active:**
-- PR #4 ready for review (5 commits)
-- All feedback addressed ✓
+- PR #4 ready for final review (7 commits)
+- All 3 rounds of feedback addressed ✓
 
 **Completed:**
 - ✅ Phase 1: Project scaffolding (PR #1 merged to main)
 - ✅ Phase 2: Core infrastructure, all MVP commands, CI/CD, tests (PR #2 merged to main)
 - ✅ Phase 3: Auto-complete implementation (PR #3 merged to main)
 - ✅ Feedback Round 1: Existing branch checkout, .github submodules, code review issues
+  - Commits: `82dcbab`, `047a187`, `646e57c`, `246aefd`
 - ✅ Feedback Round 2: Bijective path encoding (percent-encoding)
   - Replaced `__` replacement with percent-encoding (`/` → `%2F`)
   - Added automatic path migration for existing worktrees
   - Fixed path collision vulnerability (`feature/foo` vs `feature__foo`)
-  - All 125 tests passing (5 new migration tests added)
-  - Committed: `6fcfb1c`
+  - Commit: `6fcfb1c`, `02b7336`
+- ✅ Feedback Round 3: 5 critical pre-launch fixes
+  - Fixed git worktree move for proper metadata updates
+  - Fixed load_config race conditions (only save when changed)
+  - Fixed register --force to update bare repo remote URL
+  - Fixed init to store absolute base_dir paths
+  - Fixed pytest to run from clean checkout
+  - Commit: `891005c`
+- ✅ All 125 tests passing
 - ✅ Documentation updated and accurate
 
 **Pull Requests:**
 - PR #1: Phase 1 scaffolding - ✅ Merged
 - PR #2: Phase 2 core infrastructure - ✅ Merged
 - PR #3: Phase 3 auto-complete - ✅ Merged
-- PR #4: Feedback fixes - 🔄 Open (ready for review)
+- PR #4: Feedback fixes - 🔄 Open (ready for final review)
   - Commit 1 (`82dcbab`): Prompt user when fetch fails before branch creation
-  - Commit 2 (`047a187`): Support branch slashes and prevent config collisions (8 new tests)
-  - Commit 3 (`646e57c`): Config migration and path collision prevention (11 new tests)
+  - Commit 2 (`047a187`): Support branch slashes and prevent config collisions
+  - Commit 3 (`646e57c`): Config migration and path collision prevention
   - Commit 4 (`246aefd`): Update PROJECT.md with pre-release fixes
-  - Commit 5 (`6fcfb1c`): Use percent-encoding for bijective path mapping (5 new tests)
+  - Commit 5 (`6fcfb1c`): Use percent-encoding for bijective path mapping
+  - Commit 6 (`02b7336`): Update PROJECT.md with percent-encoding status
+  - Commit 7 (`891005c`): Address 5 critical feedback issues pre-launch
   - https://github.com/sadpandajoe/repo-cli/pull/4
 
 **Next:**
-- Push commit to PR #4
+- Push commits to PR #4
 - Review and merge PR #4
 - Manual end-to-end testing (optional)
 - Release v0.1.0
