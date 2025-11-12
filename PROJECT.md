@@ -930,7 +930,8 @@ repo-cli/
 
 **Phase 3 - Workflow Enhancements:**
 - `repo sync <repo>` - Fetch updates for repo
-- `repo switch <repo> <branch>` - Quick navigation helper
+- `repo switch <repo> <branch>` - Quick navigation helper (cd to worktree)
+- `repo activate <repo> <branch>` - Launch new shell in worktree directory (like claudette-cli)
 - Worktree git status indicators (dirty/clean/ahead/behind)
 
 **Phase 4 - Dependency Management:**

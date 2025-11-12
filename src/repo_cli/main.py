@@ -297,6 +297,11 @@ def create(
         else:
             console.print(f"✓ Branch: {branch} (existing)", style="green")
 
+        # Show navigation hint
+        console.print("")
+        console.print(f"  cd {str(worktree_path)}", style="cyan bold")
+        console.print("")
+
         # Initialize submodules (only if .gitmodules exists)
         gitmodules_path = worktree_path / ".gitmodules"
         if gitmodules_path.exists():
