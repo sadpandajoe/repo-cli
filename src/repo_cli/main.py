@@ -74,15 +74,15 @@ def init(
         # Create base directory
         base_path.mkdir(parents=True, exist_ok=True)
 
-        # Create config
-        initial_config = {"base_dir": base_dir, "repos": {}, "worktrees": {}}
+        # Create config with absolute path
+        initial_config = {"base_dir": str(base_path), "repos": {}, "worktrees": {}}
         config.save_config(initial_config)
 
         if force:
             console.print(f"✓ Overwrote config at {config_path}", style="green")
         else:
             console.print(f"✓ Created config at {config_path}", style="green")
-        console.print(f"✓ Created base directory: {base_dir}", style="green")
+        console.print(f"✓ Created base directory: {base_path}", style="green")
         console.print("ℹ Run 'repo --install-completion' to enable auto-complete", style="blue")
         console.print("ℹ Run 'repo create <name> <branch>' to get started", style="blue")
 
@@ -127,6 +127,33 @@ def register(
         if alias in cfg["repos"] and force:
             old_url = cfg["repos"][alias]["url"]
             console.print(f"⚠ Overwriting '{alias}' (was: {old_url})", style="yellow")
+
+            # Check if bare repo exists and has different URL
+            base_dir = utils.expand_path(cfg["base_dir"])
+            bare_repo_path = utils.get_bare_repo_path(base_dir, alias)
+
+            if bare_repo_path.exists() and old_url != url:
+                try:
+                    current_url = git_ops.get_remote_url(bare_repo_path)
+                    if current_url != url:
+                        console.print(
+                            "⚠ Bare repository remote URL mismatch:",
+                            style="yellow",
+                        )
+                        console.print(f"  Current: {current_url}", style="yellow")
+                        console.print(f"  New:     {url}", style="yellow")
+
+                        if typer.confirm("Update bare repository remote URL?"):
+                            git_ops.set_remote_url(bare_repo_path, url)
+                            console.print("✓ Updated bare repository remote URL", style="green")
+                        else:
+                            console.print(
+                                "⚠ Warning: Bare repo URL not updated. "
+                                "Future operations may fetch from wrong repository.",
+                                style="yellow",
+                            )
+                except git_ops.GitOperationError as e:
+                    console.print(f"⚠ Warning: Could not check bare repo URL: {e}", style="yellow")
 
         cfg["repos"][alias] = {"url": url, "owner_repo": owner_repo}
 

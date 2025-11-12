@@ -328,3 +328,52 @@ def init_submodules(worktree_path: Path) -> int:
         raise GitOperationError(f"Failed to initialize submodules: {stderr}") from e
 
     return len(submodule_paths)
+
+
+def get_remote_url(repo_path: Path, remote: str = "origin") -> str:
+    """Get the URL for a remote.
+
+    Args:
+        repo_path: Path to the repository (can be bare or regular)
+        remote: Name of the remote (default: origin)
+
+    Returns:
+        URL of the remote
+
+    Raises:
+        GitOperationError: If remote doesn't exist or command fails
+    """
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_path), "remote", "get-url", remote],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return result.stdout.strip()
+    except subprocess.CalledProcessError as e:
+        stderr = e.stderr.strip() if e.stderr else "Unknown error"
+        raise GitOperationError(f"Failed to get remote URL: {stderr}") from e
+
+
+def set_remote_url(repo_path: Path, url: str, remote: str = "origin") -> None:
+    """Set the URL for a remote.
+
+    Args:
+        repo_path: Path to the repository (can be bare or regular)
+        url: New URL for the remote
+        remote: Name of the remote (default: origin)
+
+    Raises:
+        GitOperationError: If operation fails
+    """
+    try:
+        subprocess.run(
+            ["git", "-C", str(repo_path), "remote", "set-url", remote, url],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError as e:
+        stderr = e.stderr.strip() if e.stderr else "Unknown error"
+        raise GitOperationError(f"Failed to set remote URL: {stderr}") from e

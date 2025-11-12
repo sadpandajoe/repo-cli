@@ -150,15 +150,40 @@ repo register repo::name ...  # Error: :: is internal delimiter
 
 ## Development
 
+### Setup
+
 ```bash
-# Install with dev dependencies
+# Clone the repository
+git clone https://github.com/sadpandajoe/repo-cli.git
+cd repo-cli
+
+# Option 1: Using uv (recommended)
 uv sync --dev
 
+# Option 2: Using pip
+python -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+pip install -e ".[dev]"
+```
+
+### Running Tests
+
+```bash
+# With uv (recommended)
+uv run pytest tests/ -v
+
+# With pip install -e .
+pytest tests/ -v
+
+# With coverage
+uv run pytest tests/ -v --cov=repo_cli --cov-report=term-missing
+```
+
+### Code Quality
+
+```bash
 # Install pre-commit hooks (recommended)
 pre-commit install
-
-# Run tests
-uv run pytest tests/ -v
 
 # Run linting
 uv run ruff check src/ tests/
@@ -168,9 +193,6 @@ uv run ruff format src/ tests/
 
 # Run pre-commit on all files
 pre-commit run --all-files
-
-# Check current structure
-find src -name "*.py" | sort
 ```
 
 ### Pre-commit Hooks

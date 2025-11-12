@@ -4,8 +4,8 @@ Handles loading, saving, and validating the YAML configuration file.
 Parses GitHub URLs to extract owner/repo slugs.
 """
 
-import contextlib
 import re
+import subprocess
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -18,7 +18,7 @@ def get_config_path() -> Path:
     return Path.home() / ".repo-cli" / "config.yaml"
 
 
-def migrate_config(config: dict[str, Any]) -> dict[str, Any]:
+def migrate_config(config: dict[str, Any]) -> tuple[dict[str, Any], bool]:
     """Migrate old config format to current format.
 
     Detects and converts worktree keys from old format (repo-branch) to
@@ -30,11 +30,11 @@ def migrate_config(config: dict[str, Any]) -> dict[str, Any]:
         config: Configuration dictionary to migrate
 
     Returns:
-        Migrated configuration dictionary
+        Tuple of (migrated config, changed) where changed indicates if migration occurred
     """
     worktrees = config.get("worktrees", {})
     if not worktrees:
-        return config
+        return config, False
 
     new_worktrees = {}
     migrated_count = 0
@@ -61,29 +61,31 @@ def migrate_config(config: dict[str, Any]) -> dict[str, Any]:
         config["worktrees"] = new_worktrees
         # Add version field to track migrations
         config.setdefault("version", "0.1.0")
+        return config, True
 
-    return config
+    return config, False
 
 
-def migrate_worktree_paths(config: dict[str, Any]) -> dict[str, Any]:
+def migrate_worktree_paths(config: dict[str, Any]) -> tuple[dict[str, Any], bool]:
     """Migrate worktree directory paths from __ encoding to percent-encoding.
 
     Old format used __ to replace / in branch names (feature/foo -> feature__foo).
     New format uses percent-encoding (feature/foo -> feature%2Ffoo).
-    This migration renames existing worktree directories to the new format.
+    Uses git worktree move to update both the filesystem and Git's internal metadata.
 
     Args:
         config: Configuration dictionary
 
     Returns:
-        Configuration dictionary (unchanged, but directories may be renamed)
+        Tuple of (config, changed) where changed indicates if migrations occurred
     """
     base_dir_str = config.get("base_dir")
     if not base_dir_str:
-        return config
+        return config, False
 
     base_dir = Path(base_dir_str).expanduser().resolve()
     worktrees = config.get("worktrees", {})
+    changed = False
 
     for _key, value in worktrees.items():
         if not isinstance(value, dict) or "repo" not in value or "branch" not in value:
@@ -102,15 +104,35 @@ def migrate_worktree_paths(config: dict[str, Any]) -> dict[str, Any]:
 
         old_path = base_dir / f"{repo}-{old_safe_branch}"
         new_path = base_dir / f"{repo}-{new_safe_branch}"
+        bare_repo_path = base_dir / f"{repo}.git"
 
-        # Migrate: rename old path to new path if old exists and new doesn't
-        if old_path.exists() and not new_path.exists():
-            # If rename fails (permissions, cross-device, etc.), skip silently
+        # Migrate: use git worktree move if old exists and new doesn't
+        if old_path.exists() and not new_path.exists() and bare_repo_path.exists():
+            # Use git worktree move to update both filesystem and Git metadata
+            # If it fails (permissions, locked worktree, etc.), skip silently
             # The worktree will need to be manually migrated or recreated
-            with contextlib.suppress(OSError):
-                old_path.rename(new_path)
+            try:
+                subprocess.run(
+                    [
+                        "git",
+                        "-C",
+                        str(bare_repo_path),
+                        "worktree",
+                        "move",
+                        str(old_path),
+                        str(new_path),
+                    ],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                changed = True
+            except (subprocess.CalledProcessError, FileNotFoundError):
+                # FileNotFoundError: git command not found
+                # CalledProcessError: git worktree move failed
+                pass
 
-    return config
+    return config, changed
 
 
 def load_config() -> dict[str, Any]:
@@ -140,13 +162,13 @@ def load_config() -> dict[str, Any]:
             raise ValueError(f"Config file must contain a YAML dictionary: {config_path}")
 
         # Migrate config if needed
-        data = migrate_config(data)
+        data, config_changed = migrate_config(data)
 
         # Migrate worktree paths from __ to percent-encoding
-        data = migrate_worktree_paths(data)
+        data, paths_changed = migrate_worktree_paths(data)
 
-        # Save migrated config back to disk
-        if "version" in data:
+        # Only save if migrations actually changed something
+        if config_changed or paths_changed:
             save_config(data)
 
         return data
