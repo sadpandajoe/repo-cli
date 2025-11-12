@@ -38,9 +38,41 @@ uv pip install -e .
 
 ```bash
 repo --help
+repo --version  # Check installed version
 ```
 
 You should see the CLI help with available commands.
+
+## Upgrading
+
+To upgrade to the latest version:
+
+```bash
+# If installed with uv
+cd /path/to/repo-cli
+git pull origin main
+uv sync --dev
+
+# If installed with pip
+cd /path/to/repo-cli
+git pull origin main
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+pip install -e ".[dev]"
+```
+
+After upgrading, verify the new version:
+
+```bash
+repo --version
+```
+
+If you encounter any issues after upgrading, run the diagnostic tool:
+
+```bash
+repo doctor
+```
+
+This will check your installation, configuration, and dependencies.
 
 ## Current Status
 

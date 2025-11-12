@@ -476,6 +476,69 @@ def delete(
         sys.exit(1)
 
 
+@app.command()
+def activate(
+    repo: Annotated[str, typer.Argument(autocompletion=complete_repo)],
+    branch: Annotated[str, typer.Argument(autocompletion=complete_branch)],
+    print_only: Annotated[
+        bool,
+        typer.Option(
+            "--print",
+            "-p",
+            help="Print path only (for shell integration)",
+        ),
+    ] = False,
+):
+    """Print the path to a worktree for navigation.
+
+    Use with shell integration:
+        cd $(repo activate myrepo feature-123 --print)
+    """
+    try:
+        # Load config
+        try:
+            cfg = config.load_config()
+        except FileNotFoundError:
+            console.print("✗ Error: Config not found. Run 'repo init' first", style="red")
+            sys.exit(1)
+
+        base_dir = cfg.get("base_dir")
+        if not base_dir:
+            console.print("✗ Error: base_dir not configured", style="red")
+            sys.exit(1)
+
+        worktree_key = f"{repo}::{branch}"
+
+        # Check if worktree exists in config
+        if worktree_key not in cfg.get("worktrees", {}):
+            console.print(f"✗ Error: Worktree '{repo}/{branch}' not found", style="red")
+            sys.exit(1)
+
+        # Get worktree path
+        worktree_path = utils.get_worktree_path(base_dir, repo, branch)
+
+        # Verify worktree exists on filesystem
+        if not worktree_path.exists():
+            console.print(f"✗ Error: Worktree directory not found: {worktree_path}", style="red")
+            console.print("   Run 'repo list' to see available worktrees", style="yellow")
+            sys.exit(1)
+
+        # Output based on mode
+        if print_only:
+            # Print path only for shell integration
+            print(str(worktree_path))
+        else:
+            # Rich formatted output
+            console.print("📂 Worktree path:", style="bold")
+            console.print("")
+            console.print(f"  cd {str(worktree_path)}", style="cyan bold")
+            console.print("")
+
+    except Exception as e:
+        console.print(f"✗ Error: {e}", style="red")
+        sys.exit(1)
+
+
 # PR subcommand group
 pr_app = typer.Typer(help="Manage pull requests", no_args_is_help=True)
 app.add_typer(pr_app, name="pr")
