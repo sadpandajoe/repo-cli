@@ -1,5 +1,7 @@
 """Main CLI entry point for repo-cli."""
 
+import platform
+import subprocess
 import sys
 from datetime import datetime
 from typing import Annotated
@@ -8,7 +10,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from repo_cli import config, gh_ops, git_ops, utils
+from repo_cli import __version__, config, gh_ops, git_ops, utils
 
 app = typer.Typer(
     name="repo",
@@ -16,6 +18,30 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 console = Console()
+
+
+def version_callback(value: bool):
+    """Print version and exit."""
+    if value:
+        console.print(f"repo-cli version {__version__}")
+        raise typer.Exit()
+
+
+@app.callback()
+def main(
+    version: Annotated[
+        bool,
+        typer.Option(
+            "--version",
+            "-v",
+            help="Show version and exit",
+            callback=version_callback,
+            is_eager=True,
+        ),
+    ] = False,
+):
+    """repo-cli: A lightweight CLI tool for managing git worktrees with PR tracking."""
+    pass
 
 
 # Auto-complete functions
@@ -499,6 +525,124 @@ def pr_link(
     except Exception as e:
         console.print(f"✗ Error: {e}", style="red")
         sys.exit(1)
+
+
+@app.command()
+def doctor():
+    """Run diagnostic checks on your repo-cli installation."""
+    console.print("[bold cyan]repo-cli Doctor[/bold cyan]")
+    console.print()
+
+    all_checks_passed = True
+
+    # Check 1: Git version
+    console.print("[bold]1. Checking Git version...[/bold]")
+    try:
+        result = subprocess.run(["git", "--version"], capture_output=True, text=True, check=True)
+        git_version = result.stdout.strip()
+        console.print(f"   ✓ {git_version}", style="green")
+
+        # Parse version and check if >= 2.17
+        version_parts = git_version.split()
+        if len(version_parts) >= 3:
+            version_num = version_parts[2]
+            major, minor = map(int, version_num.split(".")[:2])
+            if major < 2 or (major == 2 and minor < 17):
+                console.print(
+                    f"   ⚠ Warning: Git 2.17+ required, found {version_num}", style="yellow"
+                )
+                all_checks_passed = False
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        console.print("   ✗ Git not found", style="red")
+        all_checks_passed = False
+
+    # Check 2: gh CLI availability
+    console.print("[bold]2. Checking gh CLI...[/bold]")
+    if gh_ops.is_gh_available():
+        try:
+            result = subprocess.run(["gh", "--version"], capture_output=True, text=True, check=True)
+            gh_version = result.stdout.split("\n")[0].strip()
+            console.print(f"   ✓ {gh_version}", style="green")
+        except Exception:
+            console.print("   ⚠ gh CLI found but version check failed", style="yellow")
+    else:
+        console.print("   ⚠ gh CLI not found (PR features will be limited)", style="yellow")
+
+    # Check 3: Config file
+    console.print("[bold]3. Checking configuration...[/bold]")
+    try:
+        cfg = config.load_config()
+        config_path = config.get_config_path()
+        console.print(f"   ✓ Config found at {config_path}", style="green")
+
+        # Validate config schema
+        required_keys = ["base_dir", "repos", "worktrees"]
+        missing_keys = [key for key in required_keys if key not in cfg]
+        if missing_keys:
+            console.print(f"   ⚠ Missing config keys: {', '.join(missing_keys)}", style="yellow")
+            all_checks_passed = False
+        else:
+            console.print("   ✓ Config schema valid", style="green")
+
+        # Check base_dir
+        base_dir = utils.expand_path(cfg["base_dir"])
+        if base_dir.exists():
+            console.print(f"   ✓ Base directory exists: {base_dir}", style="green")
+
+            # Check permissions
+            if not base_dir.is_dir():
+                console.print(f"   ✗ Base path is not a directory: {base_dir}", style="red")
+                all_checks_passed = False
+            else:
+                # Test write permissions
+                test_file = base_dir / ".repo-cli-test"
+                try:
+                    test_file.touch()
+                    test_file.unlink()
+                    console.print("   ✓ Base directory is writable", style="green")
+                except Exception as e:
+                    console.print(f"   ✗ Base directory not writable: {e}", style="red")
+                    all_checks_passed = False
+        else:
+            console.print(f"   ⚠ Base directory does not exist: {base_dir}", style="yellow")
+            all_checks_passed = False
+
+    except FileNotFoundError:
+        console.print("   ⚠ Config not found. Run 'repo init' first", style="yellow")
+        all_checks_passed = False
+    except Exception as e:
+        console.print(f"   ✗ Config error: {e}", style="red")
+        all_checks_passed = False
+
+    # Check 4: Python environment
+    console.print("[bold]4. Checking Python environment...[/bold]")
+    console.print(f"   • Python: {sys.version.split()[0]}", style="cyan")
+    console.print(f"   • Platform: {platform.system()} {platform.release()}", style="cyan")
+    console.print(f"   • repo-cli: {__version__}", style="cyan")
+
+    # Check 5: Dependencies
+    console.print("[bold]5. Checking dependencies...[/bold]")
+    try:
+        from importlib.metadata import version as get_version
+
+        console.print(f"   ✓ typer: {get_version('typer')}", style="green")
+        console.print(f"   ✓ rich: {get_version('rich')}", style="green")
+        console.print(f"   ✓ pyyaml: {get_version('pyyaml')}", style="green")
+    except Exception as e:
+        console.print(f"   ✗ Error checking dependencies: {e}", style="red")
+        all_checks_passed = False
+
+    # Summary
+    console.print()
+    if all_checks_passed:
+        console.print("[bold green]✓ All checks passed! Your installation is healthy.[/bold green]")
+    else:
+        console.print("[bold yellow]⚠ Some checks failed. See above for details.[/bold yellow]")
+        console.print()
+        console.print("Troubleshooting tips:", style="cyan")
+        console.print("  • Update Git: https://git-scm.com/downloads")
+        console.print("  • Install gh: https://cli.github.com/")
+        console.print("  • Run: repo init --base-dir ~/code")
 
 
 if __name__ == "__main__":
