@@ -1,14 +1,17 @@
 """Main CLI entry point for repo-cli."""
 
+import platform
+import subprocess
 import sys
 from datetime import datetime
+from pathlib import Path
 from typing import Annotated
 
 import typer
 from rich.console import Console
 from rich.table import Table
 
-from repo_cli import config, gh_ops, git_ops, utils
+from repo_cli import __version__, config, gh_ops, git_ops, utils
 
 app = typer.Typer(
     name="repo",
@@ -16,6 +19,30 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 console = Console()
+
+
+def version_callback(value: bool):
+    """Print version and exit."""
+    if value:
+        console.print(f"repo-cli version {__version__}")
+        raise typer.Exit()
+
+
+@app.callback()
+def main(
+    version: Annotated[
+        bool,
+        typer.Option(
+            "--version",
+            "-v",
+            help="Show version and exit",
+            callback=version_callback,
+            is_eager=True,
+        ),
+    ] = False,
+):
+    """repo-cli: A lightweight CLI tool for managing git worktrees with PR tracking."""
+    pass
 
 
 # Auto-complete functions
@@ -450,6 +477,72 @@ def delete(
         sys.exit(1)
 
 
+@app.command()
+def activate(
+    repo: Annotated[str, typer.Argument(autocompletion=complete_repo)],
+    branch: Annotated[str, typer.Argument(autocompletion=complete_branch)],
+    print_only: Annotated[
+        bool,
+        typer.Option(
+            "--print",
+            "-p",
+            help="Print path only (for shell integration)",
+        ),
+    ] = False,
+):
+    """Print the path to a worktree for navigation.
+
+    Use with shell integration:
+        cd $(repo activate myrepo feature-123 --print)
+    """
+    try:
+        # Load config
+        try:
+            cfg = config.load_config()
+        except FileNotFoundError:
+            console.print("✗ Error: Config not found. Run 'repo init' first", style="red")
+            sys.exit(1)
+
+        base_dir = cfg.get("base_dir")
+        if not base_dir:
+            console.print("✗ Error: base_dir not configured", style="red")
+            sys.exit(1)
+
+        # Expand base_dir to Path
+        base_dir = utils.expand_path(base_dir)
+
+        worktree_key = f"{repo}::{branch}"
+
+        # Check if worktree exists in config
+        if worktree_key not in cfg.get("worktrees", {}):
+            console.print(f"✗ Error: Worktree '{repo}/{branch}' not found", style="red")
+            sys.exit(1)
+
+        # Get worktree path
+        worktree_path = utils.get_worktree_path(base_dir, repo, branch)
+
+        # Verify worktree exists on filesystem
+        if not worktree_path.exists():
+            console.print(f"✗ Error: Worktree directory not found: {worktree_path}", style="red")
+            console.print("   Run 'repo list' to see available worktrees", style="yellow")
+            sys.exit(1)
+
+        # Output based on mode
+        if print_only:
+            # Print path only for shell integration
+            print(str(worktree_path))
+        else:
+            # Rich formatted output
+            console.print("📂 Worktree path:", style="bold")
+            console.print("")
+            console.print(f"  cd {str(worktree_path)}", style="cyan bold")
+            console.print("")
+
+    except Exception as e:
+        console.print(f"✗ Error: {e}", style="red")
+        sys.exit(1)
+
+
 # PR subcommand group
 pr_app = typer.Typer(help="Manage pull requests", no_args_is_help=True)
 app.add_typer(pr_app, name="pr")
@@ -495,6 +588,338 @@ def pr_link(
         config.save_config(cfg)
 
         console.print(f"✓ Linked PR #{pr_number} to {repo}/{branch}", style="green")
+
+    except Exception as e:
+        console.print(f"✗ Error: {e}", style="red")
+        sys.exit(1)
+
+
+@app.command()
+def doctor():
+    """Run diagnostic checks on your repo-cli installation."""
+    console.print("[bold cyan]repo-cli Doctor[/bold cyan]")
+    console.print()
+
+    all_checks_passed = True
+
+    # Check 1: Git version
+    console.print("[bold]1. Checking Git version...[/bold]")
+    try:
+        result = subprocess.run(["git", "--version"], capture_output=True, text=True, check=True)
+        git_version = result.stdout.strip()
+        console.print(f"   ✓ {git_version}", style="green")
+
+        # Parse version and check if >= 2.17
+        version_parts = git_version.split()
+        if len(version_parts) >= 3:
+            version_num = version_parts[2]
+            major, minor = map(int, version_num.split(".")[:2])
+            if major < 2 or (major == 2 and minor < 17):
+                console.print(
+                    f"   ⚠ Warning: Git 2.17+ required, found {version_num}", style="yellow"
+                )
+                all_checks_passed = False
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        console.print("   ✗ Git not found", style="red")
+        all_checks_passed = False
+
+    # Check 2: gh CLI availability
+    console.print("[bold]2. Checking gh CLI...[/bold]")
+    if gh_ops.is_gh_available():
+        try:
+            result = subprocess.run(["gh", "--version"], capture_output=True, text=True, check=True)
+            gh_version = result.stdout.split("\n")[0].strip()
+            console.print(f"   ✓ {gh_version}", style="green")
+        except Exception:
+            console.print("   ⚠ gh CLI found but version check failed", style="yellow")
+    else:
+        console.print("   ⚠ gh CLI not found (PR features will be limited)", style="yellow")
+
+    # Check 3: Config file
+    console.print("[bold]3. Checking configuration...[/bold]")
+    try:
+        cfg = config.load_config()
+        config_path = config.get_config_path()
+        console.print(f"   ✓ Config found at {config_path}", style="green")
+
+        # Validate config schema
+        required_keys = ["base_dir", "repos", "worktrees"]
+        missing_keys = [key for key in required_keys if key not in cfg]
+        if missing_keys:
+            console.print(f"   ⚠ Missing config keys: {', '.join(missing_keys)}", style="yellow")
+            all_checks_passed = False
+        else:
+            console.print("   ✓ Config schema valid", style="green")
+
+        # Check base_dir
+        base_dir = utils.expand_path(cfg["base_dir"])
+        if base_dir.exists():
+            console.print(f"   ✓ Base directory exists: {base_dir}", style="green")
+
+            # Check permissions
+            if not base_dir.is_dir():
+                console.print(f"   ✗ Base path is not a directory: {base_dir}", style="red")
+                all_checks_passed = False
+            else:
+                # Test write permissions
+                test_file = base_dir / ".repo-cli-test"
+                try:
+                    test_file.touch()
+                    test_file.unlink()
+                    console.print("   ✓ Base directory is writable", style="green")
+                except Exception as e:
+                    console.print(f"   ✗ Base directory not writable: {e}", style="red")
+                    all_checks_passed = False
+        else:
+            console.print(f"   ⚠ Base directory does not exist: {base_dir}", style="yellow")
+            all_checks_passed = False
+
+    except FileNotFoundError:
+        console.print("   ⚠ Config not found. Run 'repo init' first", style="yellow")
+        all_checks_passed = False
+    except Exception as e:
+        console.print(f"   ✗ Config error: {e}", style="red")
+        all_checks_passed = False
+
+    # Check 4: Python environment
+    console.print("[bold]4. Checking Python environment...[/bold]")
+    console.print(f"   • Python: {sys.version.split()[0]}", style="cyan")
+    console.print(f"   • Platform: {platform.system()} {platform.release()}", style="cyan")
+    console.print(f"   • repo-cli: {__version__}", style="cyan")
+
+    # Check 5: Dependencies
+    console.print("[bold]5. Checking dependencies...[/bold]")
+    try:
+        from importlib.metadata import version as get_version
+
+        console.print(f"   ✓ typer: {get_version('typer')}", style="green")
+        console.print(f"   ✓ rich: {get_version('rich')}", style="green")
+        console.print(f"   ✓ pyyaml: {get_version('pyyaml')}", style="green")
+    except Exception as e:
+        console.print(f"   ✗ Error checking dependencies: {e}", style="red")
+        all_checks_passed = False
+
+    # Summary
+    console.print()
+    if all_checks_passed:
+        console.print("[bold green]✓ All checks passed! Your installation is healthy.[/bold green]")
+    else:
+        console.print("[bold yellow]⚠ Some checks failed. See above for details.[/bold yellow]")
+        console.print()
+        console.print("Troubleshooting tips:", style="cyan")
+        console.print("  • Update Git: https://git-scm.com/downloads")
+        console.print("  • Install gh: https://cli.github.com/")
+        console.print("  • Run: repo init --base-dir ~/code")
+
+
+@app.command(name="upgrade-check")
+def upgrade_check():
+    """Check if a newer version of repo-cli is available."""
+    try:
+        from packaging.version import Version
+
+        import repo_cli
+
+        # Get installation directory
+        install_dir = Path(repo_cli.__file__).parent.parent.parent
+
+        console.print("[bold cyan]Checking for updates...[/bold cyan]")
+        console.print()
+
+        # Verify it's a git repository
+        git_dir = install_dir / ".git"
+        if not git_dir.exists():
+            console.print("✗ Not installed from git. Unable to check for updates.", style="red")
+            console.print(f"  Installation directory: {install_dir}", style="yellow")
+            sys.exit(1)
+
+        console.print(f"📂 Installation: {install_dir}", style="cyan")
+
+        # Get current version
+        from repo_cli import __version__
+
+        current_version = __version__
+        console.print(f"📌 Current version: {current_version}")
+
+        # Get current branch
+        try:
+            current_branch = git_ops.get_current_branch(install_dir)
+            console.print(f"🌿 Current branch: {current_branch}")
+        except git_ops.GitOperationError as e:
+            console.print(f"⚠ Warning: {e}", style="yellow")
+            current_branch = "unknown"
+
+        # Check for uncommitted changes
+        try:
+            if git_ops.has_uncommitted_changes(install_dir):
+                console.print(
+                    "⚠ Warning: You have uncommitted changes in the installation directory",
+                    style="yellow",
+                )
+        except git_ops.GitOperationError:
+            pass
+
+        # Get latest tag from remote
+        console.print()
+        console.print("Fetching latest version from remote...", style="cyan")
+        try:
+            latest_tag = git_ops.get_latest_tag(install_dir)
+
+            if not latest_tag:
+                console.print("ℹ No version tags found on remote", style="yellow")
+                console.print("  You may be on the latest development version")
+            else:
+                # Remove 'v' prefix if present for comparison
+                latest_version_str = latest_tag.lstrip("v")
+                console.print(f"📦 Latest version: {latest_version_str}")
+
+                # Parse versions for proper semver comparison
+                try:
+                    current_ver = Version(current_version)
+                    latest_ver = Version(latest_version_str)
+
+                    if latest_ver > current_ver:
+                        console.print()
+                        console.print(
+                            f"[bold green]✓ Update available: {current_version} → {latest_version_str}[/bold green]"
+                        )
+                        console.print()
+                        console.print("Run 'repo upgrade' to update", style="cyan bold")
+                    elif latest_ver == current_ver:
+                        console.print()
+                        console.print("[bold green]✓ You are on the latest version![/bold green]")
+                    else:
+                        console.print()
+                        console.print(
+                            f"ℹ You are ahead of the latest release ({current_version} > {latest_version_str})",
+                            style="yellow",
+                        )
+                        console.print("  You may be on a development branch")
+                except Exception as e:
+                    console.print(
+                        f"⚠ Warning: Could not parse versions for comparison: {e}",
+                        style="yellow",
+                    )
+
+        except git_ops.GitOperationError as e:
+            console.print(f"✗ Failed to check for updates: {e}", style="red")
+            sys.exit(1)
+
+    except Exception as e:
+        console.print(f"✗ Error: {e}", style="red")
+        sys.exit(1)
+
+
+@app.command()
+def upgrade(force: Annotated[bool, typer.Option("--force", help="Skip safety checks")] = False):
+    """Upgrade repo-cli to the latest version."""
+    try:
+        import shutil
+
+        import repo_cli
+
+        # Get installation directory
+        install_dir = Path(repo_cli.__file__).parent.parent.parent
+
+        console.print("[bold cyan]Upgrading repo-cli...[/bold cyan]")
+        console.print()
+
+        # Verify it's a git repository
+        git_dir = install_dir / ".git"
+        if not git_dir.exists():
+            console.print("✗ Not installed from git. Unable to upgrade automatically.", style="red")
+            console.print(f"  Installation directory: {install_dir}", style="yellow")
+            sys.exit(1)
+
+        console.print(f"📂 Installation: {install_dir}", style="cyan")
+
+        # Get current version
+        from repo_cli import __version__
+
+        current_version = __version__
+        console.print(f"📌 Current version: {current_version}")
+
+        # Safety checks (unless --force)
+        if not force:
+            # Check for uncommitted changes
+            try:
+                if git_ops.has_uncommitted_changes(install_dir):
+                    console.print()
+                    console.print(
+                        "⚠ Warning: You have uncommitted changes in the installation directory",
+                        style="yellow",
+                    )
+                    if not typer.confirm("Continue anyway?"):
+                        console.print("Cancelled", style="yellow")
+                        sys.exit(0)
+            except git_ops.GitOperationError as e:
+                console.print(f"⚠ Warning: Could not check git status: {e}", style="yellow")
+
+            # Check current branch
+            try:
+                current_branch = git_ops.get_current_branch(install_dir)
+                if current_branch not in ["main", "master"]:
+                    console.print()
+                    console.print(
+                        f"⚠ Warning: You are on branch '{current_branch}' (not main/master)",
+                        style="yellow",
+                    )
+                    if not typer.confirm("Continue anyway?"):
+                        console.print("Cancelled", style="yellow")
+                        sys.exit(0)
+            except git_ops.GitOperationError as e:
+                console.print(f"⚠ Warning: Could not check branch: {e}", style="yellow")
+
+        # Pull latest changes
+        console.print()
+        console.print("Pulling latest changes from remote...", style="cyan")
+        try:
+            current_branch = git_ops.get_current_branch(install_dir)
+            git_ops.pull_latest(install_dir, branch=current_branch)
+            console.print("✓ Pulled latest changes", style="green")
+        except git_ops.GitOperationError as e:
+            console.print(f"✗ Failed to pull changes: {e}", style="red")
+            sys.exit(1)
+
+        # Reinstall dependencies
+        console.print()
+        console.print("Reinstalling dependencies...", style="cyan")
+
+        # Check if uv is available
+        if shutil.which("uv"):
+            try:
+                subprocess.run(
+                    ["uv", "sync"],
+                    cwd=install_dir,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                console.print("✓ Dependencies updated (uv sync)", style="green")
+            except subprocess.CalledProcessError as e:
+                console.print(f"✗ Failed to update dependencies: {e.stderr}", style="red")
+                sys.exit(1)
+        else:
+            # Fallback to pip
+            console.print("ℹ uv not found, using pip", style="yellow")
+            try:
+                subprocess.run(
+                    [sys.executable, "-m", "pip", "install", "-e", "."],
+                    cwd=install_dir,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                console.print("✓ Dependencies updated (pip install)", style="green")
+            except subprocess.CalledProcessError as e:
+                console.print(f"✗ Failed to update dependencies: {e.stderr}", style="red")
+                sys.exit(1)
+
+        # Reload version to show new version
+        console.print()
+        console.print("[bold green]✓ Upgrade complete![/bold green]")
+        console.print()
+        console.print("Run 'repo --version' to verify the new version", style="cyan")
 
     except Exception as e:
         console.print(f"✗ Error: {e}", style="red")

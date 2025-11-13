@@ -38,9 +38,65 @@ uv pip install -e .
 
 ```bash
 repo --help
+repo --version  # Check installed version
 ```
 
 You should see the CLI help with available commands.
+
+## Upgrading
+
+### Automatic Upgrade (Recommended)
+
+Check for updates and upgrade automatically:
+
+```bash
+# Check if newer version is available
+repo upgrade-check
+
+# Upgrade to the latest version
+repo upgrade
+
+# Skip safety checks (use with caution)
+repo upgrade --force
+```
+
+The upgrade command will:
+- Auto-detect your installation directory
+- Check for uncommitted changes and warn you
+- Pull latest changes from your current branch
+- Reinstall dependencies (using uv or pip)
+- Provide clear progress indicators
+
+### Manual Upgrade
+
+If you prefer manual control:
+
+```bash
+# If installed with uv
+cd /path/to/repo-cli
+git pull origin main
+uv sync --dev
+
+# If installed with pip
+cd /path/to/repo-cli
+git pull origin main
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+pip install -e ".[dev]"
+```
+
+### After Upgrading
+
+Verify the new version:
+
+```bash
+repo --version
+```
+
+If you encounter any issues, run diagnostics:
+
+```bash
+repo doctor
+```
 
 ## Current Status
 
@@ -49,7 +105,9 @@ You should see the CLI help with available commands.
 All MVP commands are implemented and tested. Ready for production use.
 
 ### Features
-- ✅ All commands working (init, register, create, list, delete, pr link)
+- ✅ All core commands (init, register, create, list, delete, activate, pr link)
+- ✅ Diagnostic tools (--version, doctor, upgrade-check)
+- ✅ Automatic upgrades (upgrade command with safety checks)
 - ✅ Shell auto-complete for repos and branches
 - ✅ Configuration management with YAML persistence
 - ✅ Git worktree operations via subprocess
@@ -57,15 +115,29 @@ All MVP commands are implemented and tested. Ready for production use.
 - ✅ Rich console output (colors, tables, symbols)
 - ✅ Comprehensive error handling (user-friendly messages)
 - ✅ Security: Input validation, path traversal protection, safe alias management
-- ✅ 81 passing tests with full security coverage
+- ✅ 127 passing tests with full E2E coverage
 - ✅ CI/CD with GitHub Actions
 - ✅ Ruff linting and formatting
 
 ## Usage
 
+### Basic Commands
+
 ```bash
 # Initialize configuration
 repo init
+
+# Check version
+repo --version
+
+# Run diagnostics
+repo doctor
+
+# Check for updates
+repo upgrade-check
+
+# Upgrade to latest version
+repo upgrade
 
 # Register a repository
 repo register myrepo git@github.com:user/repo.git
@@ -76,11 +148,27 @@ repo create myrepo feature-123
 # List all worktrees
 repo list
 
+# Navigate to a worktree (prints path with cd hint)
+repo activate myrepo feature-123
+
 # Link a PR to a worktree
 repo pr link myrepo feature-123 4567
 
 # Delete a worktree
 repo delete myrepo feature-123
+```
+
+### Shell Integration
+
+For quick navigation, use the `--print` flag with shell command substitution:
+
+```bash
+# Jump directly to a worktree
+cd $(repo activate myrepo feature-123 --print)
+
+# Or create an alias in your .bashrc/.zshrc
+alias repoa='cd $(repo activate "$@" --print)'
+repoa myrepo feature-123
 ```
 
 ## Naming Rules
