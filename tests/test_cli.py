@@ -751,16 +751,18 @@ class TestE2EWorkflow:
         result = runner.invoke(app, ["activate", "testapp", "feature-100"])
         assert result.exit_code == 0
         assert "Worktree path:" in result.stdout
-        # Check path components are in output (may be split across lines due to Rich formatting)
-        assert "testapp" in result.stdout
-        assert "feature-100" in result.stdout
+        # Check that worktree path components appear (removing newlines for Rich formatting)
+        output_normalized = result.stdout.replace("\n", "")
+        assert "testapp" in output_normalized
+        assert "feature-100" in output_normalized
 
         # Test print-only mode
         result = runner.invoke(app, ["activate", "testapp", "feature-100", "--print"])
         assert result.exit_code == 0
-        # Check path components (should be plain output, but check components to be safe)
-        assert "testapp" in result.stdout
-        assert "feature-100" in result.stdout
+        # For --print mode, output should be plain path (may still have newlines in CI)
+        output_normalized = result.stdout.replace("\n", "")
+        assert "testapp" in output_normalized
+        assert "feature-100" in output_normalized
         assert "Worktree path:" not in result.stdout  # Should be plain output
 
         # Step 6: Link a PR
