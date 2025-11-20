@@ -97,6 +97,55 @@ class TestGetDefaultBranch:
         assert result == "master"
         assert mock_run.call_count == 2
 
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_get_default_branch_handles_head_literal(self, mock_run):
+        """Should fallback when symbolic-ref returns 'HEAD' literal."""
+        # First call returns "HEAD" (unexpected format)
+        # Second call checks for main (succeeds)
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="HEAD\n"),
+            MagicMock(returncode=0),
+        ]
+
+        repo_path = Path("/tmp/test/repo.git")
+        result = get_default_branch(repo_path)
+
+        assert result == "main"
+        assert mock_run.call_count == 2
+
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_get_default_branch_handles_remote_ref(self, mock_run):
+        """Should fallback when symbolic-ref returns remote ref."""
+        # First call returns "refs/remotes/origin/HEAD" (unexpected format)
+        # Second call checks for main (succeeds)
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="refs/remotes/origin/HEAD\n"),
+            MagicMock(returncode=0),
+        ]
+
+        repo_path = Path("/tmp/test/repo.git")
+        result = get_default_branch(repo_path)
+
+        assert result == "main"
+        assert mock_run.call_count == 2
+
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_get_default_branch_handles_custom_ref(self, mock_run):
+        """Should fallback when symbolic-ref returns custom ref format."""
+        # First call returns custom ref (unexpected format)
+        # Second call checks for main (fails)
+        # Third call defaults to master
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="refs/custom/foo\n"),
+            subprocess.CalledProcessError(1, ["git"]),
+        ]
+
+        repo_path = Path("/tmp/test/repo.git")
+        result = get_default_branch(repo_path)
+
+        assert result == "master"
+        assert mock_run.call_count == 2
+
 
 class TestBranchExists:
     """Tests for branch_exists function."""

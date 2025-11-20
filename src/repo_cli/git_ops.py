@@ -78,11 +78,12 @@ def get_default_branch(repo_path: Path) -> str:
         )
         # Output is like "refs/heads/master"
         ref = result.stdout.strip()
-        # Extract branch name
+        # Extract branch name - ONLY if in expected format
         if ref.startswith("refs/heads/"):
             return ref[len("refs/heads/") :]
-        return ref
-    except subprocess.CalledProcessError:
+        # If unexpected format, raise to trigger fallback logic
+        raise ValueError(f"Unexpected ref format: {ref}")
+    except (subprocess.CalledProcessError, ValueError):
         # Fallback to main/master
         # Check if main exists
         try:
