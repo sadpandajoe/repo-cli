@@ -85,17 +85,20 @@ class TestGetDefaultBranch:
     @patch("repo_cli.git_ops.subprocess.run")
     def test_get_default_branch_fallback_to_master(self, mock_run):
         """Should fallback to 'master' if HEAD and main checks fail."""
-        # All checks fail
+        # First call (symbolic-ref HEAD) fails
+        # Second call (check main) fails
+        # Third call (check master) succeeds
         mock_run.side_effect = [
             subprocess.CalledProcessError(1, ["git"]),
             subprocess.CalledProcessError(1, ["git"]),
+            MagicMock(returncode=0),
         ]
 
         repo_path = Path("/tmp/test/repo.git")
         result = get_default_branch(repo_path)
 
         assert result == "master"
-        assert mock_run.call_count == 2
+        assert mock_run.call_count == 3
 
     @patch("repo_cli.git_ops.subprocess.run")
     def test_get_default_branch_handles_head_literal(self, mock_run):
@@ -115,11 +118,37 @@ class TestGetDefaultBranch:
 
     @patch("repo_cli.git_ops.subprocess.run")
     def test_get_default_branch_handles_remote_ref(self, mock_run):
-        """Should fallback when symbolic-ref returns remote ref."""
-        # First call returns "refs/remotes/origin/HEAD" (unexpected format)
-        # Second call checks for main (succeeds)
+        """Should resolve remote HEAD to actual target branch."""
+        # First call returns "refs/remotes/origin/HEAD" (remote ref)
+        # Second call resolves remote HEAD to "refs/remotes/origin/develop"
         mock_run.side_effect = [
             MagicMock(returncode=0, stdout="refs/remotes/origin/HEAD\n"),
+            MagicMock(returncode=0, stdout="refs/remotes/origin/develop\n"),
+        ]
+
+        repo_path = Path("/tmp/test/repo.git")
+        result = get_default_branch(repo_path)
+
+        assert result == "develop"
+        assert mock_run.call_count == 2
+        # Verify second call resolves the remote HEAD
+        assert mock_run.call_args_list[1][0][0] == [
+            "git",
+            "-C",
+            str(repo_path),
+            "symbolic-ref",
+            "refs/remotes/origin/HEAD",
+        ]
+
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_get_default_branch_handles_remote_ref_resolution_failure(self, mock_run):
+        """Should fallback to main/master when remote HEAD resolution fails."""
+        # First call returns "refs/remotes/origin/HEAD"
+        # Second call fails to resolve it
+        # Third call checks for main (succeeds)
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="refs/remotes/origin/HEAD\n"),
+            subprocess.CalledProcessError(1, ["git"]),
             MagicMock(returncode=0),
         ]
 
@@ -127,24 +156,46 @@ class TestGetDefaultBranch:
         result = get_default_branch(repo_path)
 
         assert result == "main"
-        assert mock_run.call_count == 2
+        assert mock_run.call_count == 3
 
     @patch("repo_cli.git_ops.subprocess.run")
     def test_get_default_branch_handles_custom_ref(self, mock_run):
         """Should fallback when symbolic-ref returns custom ref format."""
         # First call returns custom ref (unexpected format)
         # Second call checks for main (fails)
-        # Third call defaults to master
+        # Third call checks for master (succeeds)
         mock_run.side_effect = [
             MagicMock(returncode=0, stdout="refs/custom/foo\n"),
             subprocess.CalledProcessError(1, ["git"]),
+            MagicMock(returncode=0),
         ]
 
         repo_path = Path("/tmp/test/repo.git")
         result = get_default_branch(repo_path)
 
         assert result == "master"
-        assert mock_run.call_count == 2
+        assert mock_run.call_count == 3
+
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_get_default_branch_raises_when_no_branches_exist(self, mock_run):
+        """Should raise clear error when neither main nor master exists."""
+        # First call fails (symbolic-ref fails)
+        # Second call checks for main (fails)
+        # Third call checks for master (fails)
+        mock_run.side_effect = [
+            subprocess.CalledProcessError(1, ["git"]),
+            subprocess.CalledProcessError(1, ["git"]),
+            subprocess.CalledProcessError(1, ["git"]),
+        ]
+
+        repo_path = Path("/tmp/test/repo.git")
+
+        with pytest.raises(GitOperationError) as exc_info:
+            get_default_branch(repo_path)
+
+        assert "Could not determine default branch" in str(exc_info.value)
+        assert "main" in str(exc_info.value)
+        assert "master" in str(exc_info.value)
 
 
 class TestBranchExists:

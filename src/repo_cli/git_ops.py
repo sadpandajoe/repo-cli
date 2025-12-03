@@ -67,6 +67,9 @@ def get_default_branch(repo_path: Path) -> str:
 
     Returns:
         Name of the default branch (e.g., 'master', 'main')
+
+    Raises:
+        GitOperationError: If no default branch can be determined
     """
     try:
         # Read HEAD to find default branch
@@ -78,11 +81,35 @@ def get_default_branch(repo_path: Path) -> str:
         )
         # Output is like "refs/heads/master"
         ref = result.stdout.strip()
+
         # Extract branch name - ONLY if in expected format
         if ref.startswith("refs/heads/"):
             return ref[len("refs/heads/") :]
+
+        # Handle remote HEAD (e.g., refs/remotes/origin/HEAD)
+        if ref.startswith("refs/remotes/"):
+            try:
+                # Resolve remote HEAD to actual target branch
+                resolved = subprocess.run(
+                    ["git", "-C", str(repo_path), "symbolic-ref", ref],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                resolved_ref = resolved.stdout.strip()
+                # Extract branch name from refs/remotes/origin/develop → develop
+                if resolved_ref.startswith("refs/remotes/"):
+                    # Split by / and get the last component (branch name)
+                    parts = resolved_ref.split("/")
+                    if len(parts) >= 3:  # refs/remotes/origin/branch
+                        return parts[-1]
+            except subprocess.CalledProcessError:
+                # Resolution failed, fall through to fallback
+                pass
+
         # If unexpected format, raise to trigger fallback logic
         raise ValueError(f"Unexpected ref format: {ref}")
+
     except (subprocess.CalledProcessError, ValueError):
         # Fallback to main/master
         # Check if main exists
@@ -95,8 +122,24 @@ def get_default_branch(repo_path: Path) -> str:
             )
             return "main"
         except subprocess.CalledProcessError:
-            # Default to master
+            pass
+
+        # Check if master exists
+        try:
+            subprocess.run(
+                ["git", "-C", str(repo_path), "show-ref", "--verify", "refs/heads/master"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
             return "master"
+        except subprocess.CalledProcessError:
+            pass
+
+        # Neither main nor master exists
+        raise GitOperationError(
+            "Could not determine default branch. Repository has neither 'main' nor 'master' branch."
+        ) from None
 
 
 def branch_exists(repo_path: Path, branch: str) -> bool:
