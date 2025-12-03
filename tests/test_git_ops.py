@@ -420,6 +420,109 @@ class TestRemoveWorktree:
             text=True,
         )
 
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_remove_worktree_with_submodules(self, mock_run):
+        """Should deinit submodules and retry with --force when submodule error occurs."""
+        repo_path = Path("/tmp/test/repo.git")
+        worktree_path = Path("/tmp/test/repo-branch")
+
+        # First call (normal remove) fails with submodule error
+        # Second call (deinit) succeeds
+        # Third call (remove with --force) succeeds
+        mock_run.side_effect = [
+            subprocess.CalledProcessError(
+                1,
+                ["git"],
+                stderr="fatal: working trees containing submodules cannot be moved or removed",
+            ),
+            MagicMock(returncode=0),  # deinit succeeds
+            MagicMock(returncode=0),  # remove --force succeeds
+        ]
+
+        remove_worktree(repo_path, worktree_path)
+
+        # Verify all three calls
+        assert mock_run.call_count == 3
+
+        # First call: normal remove
+        assert mock_run.call_args_list[0][0][0] == [
+            "git",
+            "-C",
+            str(repo_path),
+            "worktree",
+            "remove",
+            str(worktree_path),
+        ]
+
+        # Second call: submodule deinit
+        assert mock_run.call_args_list[1][0][0] == [
+            "git",
+            "-C",
+            str(worktree_path),
+            "submodule",
+            "deinit",
+            "--all",
+            "--force",
+        ]
+
+        # Third call: remove with --force
+        assert mock_run.call_args_list[2][0][0] == [
+            "git",
+            "-C",
+            str(repo_path),
+            "worktree",
+            "remove",
+            "--force",
+            str(worktree_path),
+        ]
+
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_remove_worktree_with_console_feedback(self, mock_run):
+        """Should provide console feedback when submodules need deinit."""
+        repo_path = Path("/tmp/test/repo.git")
+        worktree_path = Path("/tmp/test/repo-branch")
+
+        # Mock console
+        mock_console = MagicMock()
+
+        # Setup submodule error scenario
+        mock_run.side_effect = [
+            subprocess.CalledProcessError(
+                1,
+                ["git"],
+                stderr="fatal: working trees containing submodules cannot be moved or removed",
+            ),
+            MagicMock(returncode=0),  # deinit succeeds
+            MagicMock(returncode=0),  # remove --force succeeds
+        ]
+
+        remove_worktree(repo_path, worktree_path, console=mock_console)
+
+        # Verify console feedback
+        assert mock_console.print.call_count == 2
+        # First call: warning
+        assert "Worktree contains submodules" in str(mock_console.print.call_args_list[0])
+        # Second call: success
+        assert "Submodules deinitialized" in str(mock_console.print.call_args_list[1])
+
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_remove_worktree_non_submodule_error(self, mock_run):
+        """Should propagate non-submodule errors immediately."""
+        repo_path = Path("/tmp/test/repo.git")
+        worktree_path = Path("/tmp/test/repo-branch")
+
+        # Fail with non-submodule error
+        mock_run.side_effect = subprocess.CalledProcessError(
+            1, ["git"], stderr="fatal: worktree does not exist"
+        )
+
+        with pytest.raises(GitOperationError) as exc_info:
+            remove_worktree(repo_path, worktree_path)
+
+        assert "worktree does not exist" in str(exc_info.value)
+        # Should only try once (no fallback for non-submodule errors)
+        assert mock_run.call_count == 1
+
 
 class TestInitSubmodules:
     """Tests for init_submodules function."""

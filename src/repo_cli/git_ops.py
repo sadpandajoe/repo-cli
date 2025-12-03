@@ -8,6 +8,7 @@ Provides high-level interfaces for git commands:
 
 import subprocess
 from pathlib import Path
+from typing import Any
 
 
 class GitOperationError(Exception):
@@ -287,17 +288,28 @@ def create_worktree(
         raise GitOperationError(f"Failed to create worktree: {stderr}") from e
 
 
-def remove_worktree(repo_path: Path, worktree_path: Path) -> None:
-    """Remove a worktree.
+def remove_worktree(repo_path: Path, worktree_path: Path, console: Any = None) -> None:
+    """Remove worktree, handling submodules if present.
+
+    Strategy:
+    1. Try normal removal first (fast path)
+    2. On submodule error, deinit and retry with --force
+    3. Provide clear feedback at each step (if console provided)
 
     Args:
         repo_path: Path to the bare repository (for context)
         worktree_path: Path to the worktree to remove
+        console: Optional Rich console for user feedback (for interactive mode)
 
     Raises:
-        GitOperationError: If removal fails (worktree doesn't exist, uncommitted changes, etc.)
+        GitOperationError: If removal fails
+
+    Note:
+        Uses dependency injection to avoid circular import (git_ops → main).
+        Console parameter is optional - works in both interactive and programmatic contexts.
     """
     try:
+        # Try normal removal first
         subprocess.run(
             ["git", "-C", str(repo_path), "worktree", "remove", str(worktree_path)],
             check=True,
@@ -305,8 +317,55 @@ def remove_worktree(repo_path: Path, worktree_path: Path) -> None:
             text=True,
         )
     except subprocess.CalledProcessError as e:
-        stderr = e.stderr.strip() if e.stderr else "Unknown error"
-        raise GitOperationError(f"Failed to remove worktree: {stderr}") from e
+        # Check if error is submodule-related
+        if e.stderr and "submodule" in e.stderr.lower():
+            # Provide feedback only if console is available
+            if console:
+                console.print("⚠️  Worktree contains submodules, deinitializing...", style="yellow")
+
+            try:
+                # Deinitialize submodules
+                # --force: Remove even if working tree has local modifications
+                # --all: Apply to all submodules
+                subprocess.run(
+                    ["git", "-C", str(worktree_path), "submodule", "deinit", "--all", "--force"],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+
+                # Retry removal with --force
+                # --force: Remove even if worktree is dirty (after deinit, git may still think it's modified)
+                subprocess.run(
+                    [
+                        "git",
+                        "-C",
+                        str(repo_path),
+                        "worktree",
+                        "remove",
+                        "--force",
+                        str(worktree_path),
+                    ],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+
+                if console:
+                    console.print("✓ Submodules deinitialized", style="green")
+
+            except subprocess.CalledProcessError as submodule_error:
+                # Provide context-specific error message
+                stderr = (
+                    submodule_error.stderr.strip() if submodule_error.stderr else "Unknown error"
+                )
+                raise GitOperationError(
+                    f"Failed to remove worktree with submodules: {stderr}"
+                ) from submodule_error
+        else:
+            # Re-raise with better error message
+            stderr = e.stderr.strip() if e.stderr else "Unknown error"
+            raise GitOperationError(f"Failed to remove worktree: {stderr}") from e
 
 
 def init_submodules(worktree_path: Path) -> int:
