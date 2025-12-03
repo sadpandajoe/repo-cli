@@ -1,5 +1,9 @@
 """Tests for config module."""
 
+import os
+import tempfile
+from pathlib import Path
+
 import pytest
 
 from repo_cli.config import load_config, migrate_config, parse_github_url, save_config
@@ -118,6 +122,105 @@ class TestConfigLoadSave:
 
         assert loaded["repos"]["test"]["metadata"]["tags"] == ["python", "cli"]
         assert loaded["repos"]["test"]["metadata"]["stars"] == 100
+
+
+class TestAtomicConfigWrites:
+    """Tests for atomic config write operations."""
+
+    def test_save_config_uses_atomic_write(self, tmp_path, monkeypatch):
+        """Should use temp file + os.replace for atomic writes."""
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+
+        config = {"base_dir": "~/code", "repos": {}, "worktrees": {}}
+
+        # Track calls to os.replace
+        replace_calls = []
+        original_replace = os.replace
+
+        def mock_replace(src, dst):
+            replace_calls.append((src, dst))
+            return original_replace(src, dst)
+
+        monkeypatch.setattr("os.replace", mock_replace)
+
+        save_config(config)
+
+        # Verify atomic write happened
+        assert len(replace_calls) == 1
+        src, dst = replace_calls[0]
+        assert str(dst) == str(config_file)  # Handle both Path and str
+        assert str(src) != str(config_file)  # Temp file, not direct write
+        assert ".config." in str(src)  # Temp file prefix
+        assert ".yaml.tmp" in str(src)  # Temp file suffix
+
+    def test_save_config_cleans_up_temp_file_on_error(self, tmp_path, monkeypatch):
+        """Should remove temp file if write fails."""
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+
+        config = {"base_dir": "~/code", "repos": {}, "worktrees": {}}
+
+        # Make yaml.safe_dump fail
+        def mock_dump(*args, **kwargs):
+            raise ValueError("Simulated write error")
+
+        monkeypatch.setattr("yaml.safe_dump", mock_dump)
+
+        # Should raise error
+        with pytest.raises(ValueError):
+            save_config(config)
+
+        # Verify no temp files left behind
+        temp_files = list(config_file.parent.glob(".config.*.yaml.tmp"))
+        assert len(temp_files) == 0
+
+    def test_save_config_calls_fsync(self, tmp_path, monkeypatch):
+        """Should call fsync to ensure data written to disk."""
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+
+        config = {"base_dir": "~/code", "repos": {}, "worktrees": {}}
+
+        # Track fsync calls
+        fsync_calls = []
+        original_fsync = os.fsync
+
+        def mock_fsync(fd):
+            fsync_calls.append(fd)
+            return original_fsync(fd)
+
+        monkeypatch.setattr("os.fsync", mock_fsync)
+
+        save_config(config)
+
+        # Verify fsync was called
+        assert len(fsync_calls) == 1
+
+    def test_save_config_temp_file_in_same_directory(self, tmp_path, monkeypatch):
+        """Should create temp file in same directory as target (required for atomic replace)."""
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+
+        config = {"base_dir": "~/code", "repos": {}, "worktrees": {}}
+
+        # Track temp file location
+        temp_file_paths = []
+        original_mkstemp = tempfile.mkstemp
+
+        def mock_mkstemp(*args, **kwargs):
+            result = original_mkstemp(*args, **kwargs)
+            temp_file_paths.append(result[1])
+            return result
+
+        monkeypatch.setattr("tempfile.mkstemp", mock_mkstemp)
+
+        save_config(config)
+
+        # Verify temp file was in same directory as config
+        assert len(temp_file_paths) == 1
+        temp_path = Path(temp_file_paths[0])
+        assert temp_path.parent == config_file.parent
 
 
 class TestMigrateConfig:

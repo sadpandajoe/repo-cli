@@ -175,21 +175,40 @@ def load_config() -> dict[str, Any]:
 
 
 def save_config(config: dict[str, Any]) -> None:
-    """Save configuration to YAML file.
+    """Save configuration to YAML file with atomic write.
 
+    Uses atomic write (temp file + os.replace) to prevent corruption.
     Creates config directory if it doesn't exist.
 
     Args:
         config: Configuration dictionary to save
     """
+    import os
+    import tempfile
+
     config_path = get_config_path()
 
     # Create directory if it doesn't exist
     config_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Write YAML
-    with open(config_path, "w") as f:
-        yaml.safe_dump(config, f, default_flow_style=False, sort_keys=False)
+    # Write to temp file in same directory (ensures same filesystem for atomic replace)
+    fd, temp_path = tempfile.mkstemp(
+        dir=config_path.parent, prefix=".config.", suffix=".yaml.tmp", text=True
+    )
+
+    try:
+        # Write YAML to temp file
+        with os.fdopen(fd, "w") as f:
+            yaml.safe_dump(config, f, default_flow_style=False, sort_keys=False)
+            f.flush()
+            os.fsync(f.fileno())  # Force write to disk
+
+        # Atomic replace (POSIX guarantees atomicity)
+        os.replace(temp_path, config_path)
+    except Exception:
+        # Clean up temp file on error
+        Path(temp_path).unlink(missing_ok=True)
+        raise
 
 
 def parse_github_url(url: str) -> str:
