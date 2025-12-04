@@ -44,13 +44,48 @@ class TestParseGitHubUrl:
 
     def test_parse_invalid_url_raises_error(self):
         """Should raise ValueError for invalid URLs."""
-        with pytest.raises(ValueError, match="Invalid GitHub URL"):
+        with pytest.raises(ValueError, match="Invalid git URL format"):
             parse_github_url("not-a-valid-url")
 
-    def test_parse_non_github_url_raises_error(self):
-        """Should raise ValueError for non-GitHub URLs."""
-        with pytest.raises(ValueError, match="Invalid GitHub URL"):
-            parse_github_url("https://gitlab.com/owner/repo.git")
+    def test_parse_github_enterprise_ssh(self):
+        """Should parse GitHub Enterprise SSH URLs."""
+        url = "git@github.enterprise.com:owner/repo.git"
+        owner_repo = parse_github_url(url)
+        assert owner_repo == "owner/repo"
+
+    def test_parse_github_enterprise_https(self):
+        """Should parse GitHub Enterprise HTTPS URLs."""
+        url = "https://github.mycompany.com/owner/repo.git"
+        owner_repo = parse_github_url(url)
+        assert owner_repo == "owner/repo"
+
+    def test_parse_gitlab_url_graceful_degradation(self):
+        """Should return None for GitLab URLs (graceful degradation)."""
+        url = "https://gitlab.com/owner/repo.git"
+        owner_repo = parse_github_url(url)
+        assert owner_repo is None
+
+    def test_parse_bitbucket_url_graceful_degradation(self):
+        """Should return None for Bitbucket URLs (graceful degradation)."""
+        url = "git@bitbucket.org:owner/repo.git"
+        owner_repo = parse_github_url(url)
+        assert owner_repo is None
+
+    def test_parse_self_hosted_url_graceful_degradation(self):
+        """Should return None for self-hosted git URLs (graceful degradation)."""
+        url = "git@git.mycompany.com:owner/repo.git"
+        owner_repo = parse_github_url(url)
+        assert owner_repo is None
+
+    def test_parse_non_github_url_with_require_github_raises(self):
+        """Should raise ValueError for non-GitHub URLs when require_github=True."""
+        with pytest.raises(ValueError, match="URL is not a GitHub URL"):
+            parse_github_url("https://gitlab.com/owner/repo.git", require_github=True)
+
+    def test_parse_invalid_url_with_require_github_raises(self):
+        """Should raise ValueError for invalid URLs when require_github=True."""
+        with pytest.raises(ValueError, match="Invalid GitHub URL format"):
+            parse_github_url("not-a-valid-url", require_github=True)
 
 
 class TestConfigLoadSave:

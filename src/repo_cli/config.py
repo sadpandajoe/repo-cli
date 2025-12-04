@@ -211,33 +211,55 @@ def save_config(config: dict[str, Any]) -> None:
         raise
 
 
-def parse_github_url(url: str) -> str:
-    """Parse GitHub URL to extract owner/repo slug.
+def parse_github_url(url: str, require_github: bool = False) -> str | None:
+    """Extract owner/repo from git URL for GitHub/GHE.
+
+    Supports GitHub.com, GitHub Enterprise, and graceful degradation for non-GitHub URLs.
 
     Args:
-        url: GitHub URL in SSH or HTTPS format
+        url: Git URL in SSH or HTTPS format
+        require_github: If True, raises ValueError for non-GitHub URLs.
+                       If False, returns None for non-GitHub URLs (graceful degradation).
 
     Returns:
-        owner/repo slug
+        owner/repo slug if GitHub/GHE URL, None if non-GitHub (when require_github=False)
 
     Examples:
-        git@github.com:owner/repo.git -> owner/repo
-        https://github.com/owner/repo.git -> owner/repo
+        git@github.com:user/repo.git -> "user/repo" (GitHub)
+        git@github.enterprise.com:user/repo.git -> "user/repo" (GHE)
+        git@gitlab.com:user/repo.git -> None (GitLab, graceful)
+        https://github.com/user/repo.git -> "user/repo" (GitHub)
 
     Raises:
-        ValueError: If URL is not a valid GitHub URL
+        ValueError: Only if require_github=True and URL is not GitHub
+                   OR if URL format is invalid
     """
-    # SSH format: git@github.com:owner/repo.git
-    ssh_pattern = r"git@github\.com:([^/]+/[^/]+?)(\.git)?$"
+    # SSH format: git@{host}:{owner}/{repo}.git
+    ssh_pattern = r"git@([^:]+):([^/]+/[^/]+?)(\.git)?$"
     ssh_match = re.match(ssh_pattern, url)
     if ssh_match:
-        return ssh_match.group(1)
+        host, owner_repo = ssh_match.group(1), ssh_match.group(2)
+        # Accept any GitHub hostname (github.com, github.enterprise.com, etc.)
+        if "github" in host.lower():
+            return owner_repo
+        elif not require_github:
+            return None  # Non-GitHub, but that's OK (PR features will be disabled)
+        else:
+            raise ValueError(f"URL is not a GitHub URL: {url}")
 
-    # HTTPS format: https://github.com/owner/repo.git
-    https_pattern = r"https://github\.com/([^/]+/[^/]+?)(\.git)?$"
+    # HTTPS format: https://{host}/{owner}/{repo}.git
+    https_pattern = r"https://([^/]+)/([^/]+/[^/]+?)(\.git)?$"
     https_match = re.match(https_pattern, url)
     if https_match:
-        return https_match.group(1)
+        host, owner_repo = https_match.group(1), https_match.group(2)
+        if "github" in host.lower():
+            return owner_repo
+        elif not require_github:
+            return None
+        else:
+            raise ValueError(f"URL is not a GitHub URL: {url}")
 
-    # If no pattern matched, raise error
-    raise ValueError(f"Invalid GitHub URL: {url}")
+    # No pattern matched - invalid URL format
+    if require_github:
+        raise ValueError(f"Invalid GitHub URL format: {url}")
+    raise ValueError(f"Invalid git URL format: {url}")

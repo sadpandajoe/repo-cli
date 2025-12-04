@@ -75,7 +75,7 @@ class TestCliRegister:
         assert "GitHub repo: owner/repo" in result.stdout
 
     def test_register_invalid_url(self, tmp_path, monkeypatch):
-        """Should reject invalid GitHub URLs."""
+        """Should reject invalid git URLs."""
         config_file = tmp_path / ".repo-cli" / "config.yaml"
         monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
 
@@ -86,7 +86,7 @@ class TestCliRegister:
         result = runner.invoke(app, ["register", "test", "not-a-valid-url"])
 
         assert result.exit_code == 1
-        assert "Invalid GitHub URL" in result.stdout
+        assert "Invalid git URL format" in result.stdout
 
     def test_register_path_traversal_blocked(self, tmp_path, monkeypatch):
         """Should block path traversal attempts in alias."""
