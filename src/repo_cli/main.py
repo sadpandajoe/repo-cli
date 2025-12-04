@@ -235,6 +235,9 @@ def create(
     from_ref: Annotated[
         str | None, typer.Option("--from", help="Start point (branch, tag, or commit)")
     ] = None,
+    url: Annotated[
+        str | None, typer.Option("--url", help="Repository URL (for lazy registration)")
+    ] = None,
 ):
     """Create a new worktree for a branch."""
     try:
@@ -258,15 +261,29 @@ def create(
         # Check if repo exists in config, if not prompt for URL (lazy registration)
         if repo not in cfg.get("repos", {}):
             console.print(f"Repository '{repo}' not registered.", style="yellow")
-            url = typer.prompt("Enter repository URL")
+
+            # Use --url flag if provided
+            if url:
+                repo_url = url
+            elif sys.stdin.isatty():
+                # Interactive mode: prompt for URL
+                repo_url = typer.prompt("Enter repository URL")
+            else:
+                # Non-interactive mode: fail fast
+                console.print(
+                    f"✗ Error: Repository '{repo}' not registered.\n"
+                    f"  Run 'repo register {repo} <url>' first, or use --url flag.",
+                    style="red",
+                )
+                sys.exit(1)
 
             try:
-                owner_repo = config.parse_github_url(url)
+                owner_repo = config.parse_github_url(repo_url)
                 if "repos" not in cfg:
                     cfg["repos"] = {}
-                cfg["repos"][repo] = {"url": url, "owner_repo": owner_repo}
+                cfg["repos"][repo] = {"url": repo_url, "owner_repo": owner_repo}
                 config.save_config(cfg)
-                console.print(f"✓ Registered '{repo}' → {url}", style="green")
+                console.print(f"✓ Registered '{repo}' → {repo_url}", style="green")
             except ValueError as e:
                 console.print(f"✗ Error: {e}", style="red")
                 sys.exit(1)
