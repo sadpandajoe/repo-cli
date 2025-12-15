@@ -129,11 +129,12 @@ def register(
         # Validate alias name to prevent path traversal
         utils.validate_repo_alias(alias)
 
-        # Parse GitHub URL to extract owner/repo
-        owner_repo = config.parse_github_url(url)
-
-        # Load config
+        # Load config first (needed for enterprise_hosts)
         cfg = config.load_config()
+
+        # Parse GitHub URL to extract owner/repo
+        enterprise_hosts = cfg.get("github_enterprise_hosts", [])
+        owner_repo = config.parse_github_url(url, enterprise_hosts=enterprise_hosts)
 
         # Check if alias already exists
         if "repos" not in cfg:
@@ -215,7 +216,10 @@ def register(
         config.save_config(cfg)
 
         console.print(f"✓ Registered '{alias}' → {url}", style="green")
-        console.print(f"✓ GitHub repo: {owner_repo}", style="green")
+        if owner_repo:
+            console.print(f"✓ GitHub repo: {owner_repo}", style="green")
+        else:
+            console.print("ℹ Non-GitHub URL - PR features unavailable", style="yellow")
 
     except ValueError as e:
         console.print(f"✗ Error: {e}", style="red")
@@ -278,7 +282,8 @@ def create(
                 sys.exit(1)
 
             try:
-                owner_repo = config.parse_github_url(repo_url)
+                enterprise_hosts = cfg.get("github_enterprise_hosts", [])
+                owner_repo = config.parse_github_url(repo_url, enterprise_hosts=enterprise_hosts)
                 if "repos" not in cfg:
                     cfg["repos"] = {}
                 cfg["repos"][repo] = {"url": repo_url, "owner_repo": owner_repo}
@@ -447,8 +452,17 @@ def delete(
     repo: Annotated[str, typer.Argument(autocompletion=complete_repo)],
     branch: Annotated[str, typer.Argument(autocompletion=complete_branch)],
     force: Annotated[bool, typer.Option("--force", help="Skip confirmation")] = False,
+    delete_branch: Annotated[
+        bool, typer.Option("--delete-branch", help="Also delete the local branch")
+    ] = False,
+    delete_remote: Annotated[
+        bool,
+        typer.Option(
+            "--delete-remote", help="Also delete the remote branch (implies --delete-branch)"
+        ),
+    ] = False,
 ):
-    """Remove a worktree."""
+    """Remove a worktree and optionally delete associated branches."""
     try:
         # Load config
         try:
@@ -476,9 +490,13 @@ def delete(
         bare_repo_path = utils.get_bare_repo_path(base_dir, repo)
         worktree_path = utils.get_worktree_path(base_dir, repo, branch)
 
+        # Get remote name before deleting from config (needed for branch deletion)
+        worktree_config = cfg["worktrees"][worktree_key]
+        remote = worktree_config.get("remote", "origin")
+
         # Remove worktree
         try:
-            git_ops.remove_worktree(bare_repo_path, worktree_path)
+            git_ops.remove_worktree(bare_repo_path, worktree_path, console=console)
         except git_ops.GitOperationError as e:
             console.print(f"✗ {e}", style="red")
             sys.exit(1)
@@ -488,6 +506,37 @@ def delete(
         config.save_config(cfg)
 
         console.print(f"✓ Removed worktree: {str(worktree_path)}", style="green")
+
+        # Delete branches if requested
+        if delete_remote or delete_branch:
+            # Delete remote branch first (if requested)
+            if delete_remote:
+                try:
+                    subprocess.run(
+                        ["git", "-C", str(bare_repo_path), "push", remote, "--delete", branch],
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                    )
+                    console.print(f"✓ Deleted remote branch: {remote}/{branch}", style="green")
+                except subprocess.CalledProcessError as e:
+                    # Non-fatal: warn but continue
+                    error_msg = e.stderr.strip() if e.stderr else str(e)
+                    console.print(f"⚠ Failed to delete remote branch: {error_msg}", style="yellow")
+
+            # Delete local branch
+            try:
+                subprocess.run(
+                    ["git", "-C", str(bare_repo_path), "branch", "-D", branch],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                console.print(f"✓ Deleted local branch: {branch}", style="green")
+            except subprocess.CalledProcessError as e:
+                # Non-fatal: warn but continue
+                error_msg = e.stderr.strip() if e.stderr else str(e)
+                console.print(f"⚠ Failed to delete local branch: {error_msg}", style="yellow")
 
     except Exception as e:
         console.print(f"✗ Error: {e}", style="red")
@@ -506,11 +555,24 @@ def activate(
             help="Print path only (for shell integration)",
         ),
     ] = False,
+    shell: Annotated[
+        bool,
+        typer.Option(
+            "--shell",
+            help="Launch new shell in worktree directory",
+        ),
+    ] = False,
 ):
-    """Print the path to a worktree for navigation.
+    """Activate a worktree (print path or launch shell).
+
+    Default: Print path for cd integration
+    With --shell: Launch new interactive shell in worktree
+    With --print: Print path only (for shell integration)
 
     Use with shell integration:
         cd $(repo activate myrepo feature-123 --print)
+    Or launch new shell:
+        repo activate myrepo feature-123 --shell
     """
     try:
         # Load config
@@ -544,8 +606,50 @@ def activate(
             console.print("   Run 'repo list' to see available worktrees", style="yellow")
             sys.exit(1)
 
+        # Check for mutually exclusive flags
+        if shell and print_only:
+            console.print("✗ Error: --shell and --print are mutually exclusive", style="red")
+            sys.exit(1)
+
         # Output based on mode
-        if print_only:
+        if shell:
+            # Launch new shell in worktree directory
+            import os
+
+            def escape_for_ps1(s: str) -> str:
+                """Escape string for safe PS1 inclusion."""
+                # Escape backslashes first, then shell special characters
+                return (
+                    s.replace("\\", "\\\\")
+                    .replace("$", "\\$")
+                    .replace("`", "\\`")
+                    .replace('"', '\\"')
+                    .replace("!", "\\!")
+                )
+
+            # Detect user's shell
+            user_shell = os.environ.get("SHELL", "/bin/bash")
+
+            # Prepare modified prompt to show worktree context (escaped for safety)
+            safe_repo = escape_for_ps1(repo)
+            safe_branch = escape_for_ps1(branch)
+            worktree_prompt = f"({safe_repo}/{safe_branch}) "
+
+            # Set environment for new shell
+            new_env = os.environ.copy()
+            # Modify PS1 for bash/zsh to show worktree context
+            if "bash" in user_shell or "zsh" in user_shell:
+                current_ps1 = new_env.get("PS1", "\\u@\\h:\\w\\$ ")
+                new_env["PS1"] = worktree_prompt + current_ps1
+
+            console.print(f"🚀 Launching shell in worktree: {repo}/{branch}", style="bold green")
+            console.print(f"   Path: {worktree_path}", style="dim")
+            console.print("   Type 'exit' to return\n", style="dim")
+
+            # Launch interactive shell with changed directory
+            os.chdir(worktree_path)
+            os.execvpe(user_shell, [user_shell, "-i"], new_env)
+        elif print_only:
             # Print path only for shell integration
             print(str(worktree_path))
         else:
@@ -892,6 +996,15 @@ def upgrade(force: Annotated[bool, typer.Option("--force", help="Skip safety che
         console.print("Pulling latest changes from remote...", style="cyan")
         try:
             current_branch = git_ops.get_current_branch(install_dir)
+            if not current_branch:
+                console.print(
+                    "✗ Cannot upgrade: HEAD is detached (no branch checked out)", style="red"
+                )
+                console.print(
+                    "  Run 'git checkout main' in your repo-cli install directory first",
+                    style="yellow",
+                )
+                sys.exit(1)
             git_ops.pull_latest(install_dir, branch=current_branch)
             console.print("✓ Pulled latest changes", style="green")
         except git_ops.GitOperationError as e:

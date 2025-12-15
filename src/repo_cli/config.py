@@ -211,7 +211,11 @@ def save_config(config: dict[str, Any]) -> None:
         raise
 
 
-def parse_github_url(url: str, require_github: bool = False) -> str | None:
+def parse_github_url(
+    url: str,
+    require_github: bool = False,
+    enterprise_hosts: list[str] | None = None,
+) -> str | None:
     """Extract owner/repo from git URL for GitHub/GHE.
 
     Supports GitHub.com, GitHub Enterprise, and graceful degradation for non-GitHub URLs.
@@ -220,6 +224,8 @@ def parse_github_url(url: str, require_github: bool = False) -> str | None:
         url: Git URL in SSH or HTTPS format
         require_github: If True, raises ValueError for non-GitHub URLs.
                        If False, returns None for non-GitHub URLs (graceful degradation).
+        enterprise_hosts: Optional list of GitHub Enterprise hostnames to recognize
+                         (e.g., ["ghe.company.com", "github-internal.corp.net"])
 
     Returns:
         owner/repo slug if GitHub/GHE URL, None if non-GitHub (when require_github=False)
@@ -227,6 +233,7 @@ def parse_github_url(url: str, require_github: bool = False) -> str | None:
     Examples:
         git@github.com:user/repo.git -> "user/repo" (GitHub)
         git@github.enterprise.com:user/repo.git -> "user/repo" (GHE)
+        git@ghe.company.com:user/repo.git -> "user/repo" (GHE with allowlist)
         git@gitlab.com:user/repo.git -> None (GitLab, graceful)
         https://github.com/user/repo.git -> "user/repo" (GitHub)
 
@@ -234,13 +241,21 @@ def parse_github_url(url: str, require_github: bool = False) -> str | None:
         ValueError: Only if require_github=True and URL is not GitHub
                    OR if URL format is invalid
     """
+    # Normalize enterprise hosts for case-insensitive matching
+    ghe_hosts = {h.lower() for h in (enterprise_hosts or [])}
+
+    def is_github_host(host: str) -> bool:
+        """Check if host is GitHub.com, GHE, or in enterprise allowlist."""
+        host_lower = host.lower()
+        return "github" in host_lower or host_lower in ghe_hosts
+
     # SSH format: git@{host}:{owner}/{repo}.git
     ssh_pattern = r"git@([^:]+):([^/]+/[^/]+?)(\.git)?$"
     ssh_match = re.match(ssh_pattern, url)
     if ssh_match:
         host, owner_repo = ssh_match.group(1), ssh_match.group(2)
-        # Accept any GitHub hostname (github.com, github.enterprise.com, etc.)
-        if "github" in host.lower():
+        # Accept any GitHub hostname or allowlisted enterprise host
+        if is_github_host(host):
             return owner_repo
         elif not require_github:
             return None  # Non-GitHub, but that's OK (PR features will be disabled)
@@ -252,7 +267,7 @@ def parse_github_url(url: str, require_github: bool = False) -> str | None:
     https_match = re.match(https_pattern, url)
     if https_match:
         host, owner_repo = https_match.group(1), https_match.group(2)
-        if "github" in host.lower():
+        if is_github_host(host):
             return owner_repo
         elif not require_github:
             return None
