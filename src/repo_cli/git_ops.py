@@ -8,6 +8,7 @@ Provides high-level interfaces for git commands:
 
 import subprocess
 from pathlib import Path
+from typing import Any
 
 
 class GitOperationError(Exception):
@@ -67,6 +68,9 @@ def get_default_branch(repo_path: Path) -> str:
 
     Returns:
         Name of the default branch (e.g., 'master', 'main')
+
+    Raises:
+        GitOperationError: If no default branch can be determined
     """
     try:
         # Read HEAD to find default branch
@@ -78,11 +82,36 @@ def get_default_branch(repo_path: Path) -> str:
         )
         # Output is like "refs/heads/master"
         ref = result.stdout.strip()
-        # Extract branch name
+
+        # Extract branch name - ONLY if in expected format
         if ref.startswith("refs/heads/"):
             return ref[len("refs/heads/") :]
-        return ref
-    except subprocess.CalledProcessError:
+
+        # Handle remote HEAD (e.g., refs/remotes/origin/HEAD)
+        if ref.startswith("refs/remotes/"):
+            try:
+                # Resolve remote HEAD to actual target branch
+                resolved = subprocess.run(
+                    ["git", "-C", str(repo_path), "symbolic-ref", ref],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                resolved_ref = resolved.stdout.strip()
+                # Extract branch name from refs/remotes/origin/develop → develop
+                if resolved_ref.startswith("refs/remotes/"):
+                    # Split by / and get the last component (branch name)
+                    parts = resolved_ref.split("/")
+                    if len(parts) >= 3:  # refs/remotes/origin/branch
+                        return parts[-1]
+            except subprocess.CalledProcessError:
+                # Resolution failed, fall through to fallback
+                pass
+
+        # If unexpected format, raise to trigger fallback logic
+        raise ValueError(f"Unexpected ref format: {ref}")
+
+    except (subprocess.CalledProcessError, ValueError):
         # Fallback to main/master
         # Check if main exists
         try:
@@ -94,8 +123,24 @@ def get_default_branch(repo_path: Path) -> str:
             )
             return "main"
         except subprocess.CalledProcessError:
-            # Default to master
+            pass
+
+        # Check if master exists
+        try:
+            subprocess.run(
+                ["git", "-C", str(repo_path), "show-ref", "--verify", "refs/heads/master"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
             return "master"
+        except subprocess.CalledProcessError:
+            pass
+
+        # Neither main nor master exists
+        raise GitOperationError(
+            "Could not determine default branch. Repository has neither 'main' nor 'master' branch."
+        ) from None
 
 
 def branch_exists(repo_path: Path, branch: str) -> bool:
@@ -243,17 +288,28 @@ def create_worktree(
         raise GitOperationError(f"Failed to create worktree: {stderr}") from e
 
 
-def remove_worktree(repo_path: Path, worktree_path: Path) -> None:
-    """Remove a worktree.
+def remove_worktree(repo_path: Path, worktree_path: Path, console: Any = None) -> None:
+    """Remove worktree, handling submodules if present.
+
+    Strategy:
+    1. Try normal removal first (fast path)
+    2. On submodule error, deinit and retry with --force
+    3. Provide clear feedback at each step (if console provided)
 
     Args:
         repo_path: Path to the bare repository (for context)
         worktree_path: Path to the worktree to remove
+        console: Optional Rich console for user feedback (for interactive mode)
 
     Raises:
-        GitOperationError: If removal fails (worktree doesn't exist, uncommitted changes, etc.)
+        GitOperationError: If removal fails
+
+    Note:
+        Uses dependency injection to avoid circular import (git_ops → main).
+        Console parameter is optional - works in both interactive and programmatic contexts.
     """
     try:
+        # Try normal removal first
         subprocess.run(
             ["git", "-C", str(repo_path), "worktree", "remove", str(worktree_path)],
             check=True,
@@ -261,8 +317,55 @@ def remove_worktree(repo_path: Path, worktree_path: Path) -> None:
             text=True,
         )
     except subprocess.CalledProcessError as e:
-        stderr = e.stderr.strip() if e.stderr else "Unknown error"
-        raise GitOperationError(f"Failed to remove worktree: {stderr}") from e
+        # Check if error is submodule-related
+        if e.stderr and "submodule" in e.stderr.lower():
+            # Provide feedback only if console is available
+            if console:
+                console.print("⚠️  Worktree contains submodules, deinitializing...", style="yellow")
+
+            try:
+                # Deinitialize submodules
+                # --force: Remove even if working tree has local modifications
+                # --all: Apply to all submodules
+                subprocess.run(
+                    ["git", "-C", str(worktree_path), "submodule", "deinit", "--all", "--force"],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+
+                # Retry removal with --force
+                # --force: Remove even if worktree is dirty (after deinit, git may still think it's modified)
+                subprocess.run(
+                    [
+                        "git",
+                        "-C",
+                        str(repo_path),
+                        "worktree",
+                        "remove",
+                        "--force",
+                        str(worktree_path),
+                    ],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+
+                if console:
+                    console.print("✓ Submodules deinitialized", style="green")
+
+            except subprocess.CalledProcessError as submodule_error:
+                # Provide context-specific error message
+                stderr = (
+                    submodule_error.stderr.strip() if submodule_error.stderr else "Unknown error"
+                )
+                raise GitOperationError(
+                    f"Failed to remove worktree with submodules: {stderr}"
+                ) from submodule_error
+        else:
+            # Re-raise with better error message
+            stderr = e.stderr.strip() if e.stderr else "Unknown error"
+            raise GitOperationError(f"Failed to remove worktree: {stderr}") from e
 
 
 def init_submodules(worktree_path: Path) -> int:

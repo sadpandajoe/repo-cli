@@ -85,17 +85,117 @@ class TestGetDefaultBranch:
     @patch("repo_cli.git_ops.subprocess.run")
     def test_get_default_branch_fallback_to_master(self, mock_run):
         """Should fallback to 'master' if HEAD and main checks fail."""
-        # All checks fail
+        # First call (symbolic-ref HEAD) fails
+        # Second call (check main) fails
+        # Third call (check master) succeeds
         mock_run.side_effect = [
             subprocess.CalledProcessError(1, ["git"]),
             subprocess.CalledProcessError(1, ["git"]),
+            MagicMock(returncode=0),
         ]
 
         repo_path = Path("/tmp/test/repo.git")
         result = get_default_branch(repo_path)
 
         assert result == "master"
+        assert mock_run.call_count == 3
+
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_get_default_branch_handles_head_literal(self, mock_run):
+        """Should fallback when symbolic-ref returns 'HEAD' literal."""
+        # First call returns "HEAD" (unexpected format)
+        # Second call checks for main (succeeds)
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="HEAD\n"),
+            MagicMock(returncode=0),
+        ]
+
+        repo_path = Path("/tmp/test/repo.git")
+        result = get_default_branch(repo_path)
+
+        assert result == "main"
         assert mock_run.call_count == 2
+
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_get_default_branch_handles_remote_ref(self, mock_run):
+        """Should resolve remote HEAD to actual target branch."""
+        # First call returns "refs/remotes/origin/HEAD" (remote ref)
+        # Second call resolves remote HEAD to "refs/remotes/origin/develop"
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="refs/remotes/origin/HEAD\n"),
+            MagicMock(returncode=0, stdout="refs/remotes/origin/develop\n"),
+        ]
+
+        repo_path = Path("/tmp/test/repo.git")
+        result = get_default_branch(repo_path)
+
+        assert result == "develop"
+        assert mock_run.call_count == 2
+        # Verify second call resolves the remote HEAD
+        assert mock_run.call_args_list[1][0][0] == [
+            "git",
+            "-C",
+            str(repo_path),
+            "symbolic-ref",
+            "refs/remotes/origin/HEAD",
+        ]
+
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_get_default_branch_handles_remote_ref_resolution_failure(self, mock_run):
+        """Should fallback to main/master when remote HEAD resolution fails."""
+        # First call returns "refs/remotes/origin/HEAD"
+        # Second call fails to resolve it
+        # Third call checks for main (succeeds)
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="refs/remotes/origin/HEAD\n"),
+            subprocess.CalledProcessError(1, ["git"]),
+            MagicMock(returncode=0),
+        ]
+
+        repo_path = Path("/tmp/test/repo.git")
+        result = get_default_branch(repo_path)
+
+        assert result == "main"
+        assert mock_run.call_count == 3
+
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_get_default_branch_handles_custom_ref(self, mock_run):
+        """Should fallback when symbolic-ref returns custom ref format."""
+        # First call returns custom ref (unexpected format)
+        # Second call checks for main (fails)
+        # Third call checks for master (succeeds)
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="refs/custom/foo\n"),
+            subprocess.CalledProcessError(1, ["git"]),
+            MagicMock(returncode=0),
+        ]
+
+        repo_path = Path("/tmp/test/repo.git")
+        result = get_default_branch(repo_path)
+
+        assert result == "master"
+        assert mock_run.call_count == 3
+
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_get_default_branch_raises_when_no_branches_exist(self, mock_run):
+        """Should raise clear error when neither main nor master exists."""
+        # First call fails (symbolic-ref fails)
+        # Second call checks for main (fails)
+        # Third call checks for master (fails)
+        mock_run.side_effect = [
+            subprocess.CalledProcessError(1, ["git"]),
+            subprocess.CalledProcessError(1, ["git"]),
+            subprocess.CalledProcessError(1, ["git"]),
+        ]
+
+        repo_path = Path("/tmp/test/repo.git")
+
+        with pytest.raises(GitOperationError) as exc_info:
+            get_default_branch(repo_path)
+
+        assert "Could not determine default branch" in str(exc_info.value)
+        assert "main" in str(exc_info.value)
+        assert "master" in str(exc_info.value)
 
 
 class TestBranchExists:
@@ -319,6 +419,109 @@ class TestRemoveWorktree:
             capture_output=True,
             text=True,
         )
+
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_remove_worktree_with_submodules(self, mock_run):
+        """Should deinit submodules and retry with --force when submodule error occurs."""
+        repo_path = Path("/tmp/test/repo.git")
+        worktree_path = Path("/tmp/test/repo-branch")
+
+        # First call (normal remove) fails with submodule error
+        # Second call (deinit) succeeds
+        # Third call (remove with --force) succeeds
+        mock_run.side_effect = [
+            subprocess.CalledProcessError(
+                1,
+                ["git"],
+                stderr="fatal: working trees containing submodules cannot be moved or removed",
+            ),
+            MagicMock(returncode=0),  # deinit succeeds
+            MagicMock(returncode=0),  # remove --force succeeds
+        ]
+
+        remove_worktree(repo_path, worktree_path)
+
+        # Verify all three calls
+        assert mock_run.call_count == 3
+
+        # First call: normal remove
+        assert mock_run.call_args_list[0][0][0] == [
+            "git",
+            "-C",
+            str(repo_path),
+            "worktree",
+            "remove",
+            str(worktree_path),
+        ]
+
+        # Second call: submodule deinit
+        assert mock_run.call_args_list[1][0][0] == [
+            "git",
+            "-C",
+            str(worktree_path),
+            "submodule",
+            "deinit",
+            "--all",
+            "--force",
+        ]
+
+        # Third call: remove with --force
+        assert mock_run.call_args_list[2][0][0] == [
+            "git",
+            "-C",
+            str(repo_path),
+            "worktree",
+            "remove",
+            "--force",
+            str(worktree_path),
+        ]
+
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_remove_worktree_with_console_feedback(self, mock_run):
+        """Should provide console feedback when submodules need deinit."""
+        repo_path = Path("/tmp/test/repo.git")
+        worktree_path = Path("/tmp/test/repo-branch")
+
+        # Mock console
+        mock_console = MagicMock()
+
+        # Setup submodule error scenario
+        mock_run.side_effect = [
+            subprocess.CalledProcessError(
+                1,
+                ["git"],
+                stderr="fatal: working trees containing submodules cannot be moved or removed",
+            ),
+            MagicMock(returncode=0),  # deinit succeeds
+            MagicMock(returncode=0),  # remove --force succeeds
+        ]
+
+        remove_worktree(repo_path, worktree_path, console=mock_console)
+
+        # Verify console feedback
+        assert mock_console.print.call_count == 2
+        # First call: warning
+        assert "Worktree contains submodules" in str(mock_console.print.call_args_list[0])
+        # Second call: success
+        assert "Submodules deinitialized" in str(mock_console.print.call_args_list[1])
+
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_remove_worktree_non_submodule_error(self, mock_run):
+        """Should propagate non-submodule errors immediately."""
+        repo_path = Path("/tmp/test/repo.git")
+        worktree_path = Path("/tmp/test/repo-branch")
+
+        # Fail with non-submodule error
+        mock_run.side_effect = subprocess.CalledProcessError(
+            1, ["git"], stderr="fatal: worktree does not exist"
+        )
+
+        with pytest.raises(GitOperationError) as exc_info:
+            remove_worktree(repo_path, worktree_path)
+
+        assert "worktree does not exist" in str(exc_info.value)
+        # Should only try once (no fallback for non-submodule errors)
+        assert mock_run.call_count == 1
 
 
 class TestInitSubmodules:

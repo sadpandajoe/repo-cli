@@ -1,5 +1,6 @@
 """Integration tests for CLI commands using Typer's CliRunner."""
 
+import subprocess
 from unittest.mock import patch
 
 from typer.testing import CliRunner
@@ -75,7 +76,7 @@ class TestCliRegister:
         assert "GitHub repo: owner/repo" in result.stdout
 
     def test_register_invalid_url(self, tmp_path, monkeypatch):
-        """Should reject invalid GitHub URLs."""
+        """Should reject invalid git URLs."""
         config_file = tmp_path / ".repo-cli" / "config.yaml"
         monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
 
@@ -86,7 +87,7 @@ class TestCliRegister:
         result = runner.invoke(app, ["register", "test", "not-a-valid-url"])
 
         assert result.exit_code == 1
-        assert "Invalid GitHub URL" in result.stdout
+        assert "Invalid git URL format" in result.stdout
 
     def test_register_path_traversal_blocked(self, tmp_path, monkeypatch):
         """Should block path traversal attempts in alias."""
@@ -679,6 +680,152 @@ class TestCliUpgradeCheck:
             assert result.exit_code == 0
             assert "Checking for updates" in result.stdout
             assert "No version tags found" in result.stdout
+
+
+class TestCliUpgrade:
+    """Tests for the upgrade command."""
+
+    def test_upgrade_not_git_repo(self, tmp_path, monkeypatch):
+        """Should error when not installed from git."""
+        import repo_cli
+
+        fake_install = tmp_path / "fake-install" / "repo_cli" / "__init__.py"
+        fake_install.parent.mkdir(parents=True)
+        fake_install.touch()
+
+        monkeypatch.setattr(repo_cli, "__file__", str(fake_install))
+
+        result = runner.invoke(app, ["upgrade"])
+
+        assert result.exit_code == 1
+        assert "Not installed from git" in result.stdout
+
+    def test_upgrade_with_force_flag(self, tmp_path, monkeypatch):
+        """Should skip safety checks when --force is used."""
+        import repo_cli
+
+        # Create fake git installation
+        fake_install = tmp_path / "fake-install"
+        fake_git = fake_install / ".git"
+        fake_git.mkdir(parents=True)
+
+        fake_module = fake_install / "src" / "repo_cli" / "__init__.py"
+        fake_module.parent.mkdir(parents=True)
+        fake_module.touch()
+
+        monkeypatch.setattr(repo_cli, "__file__", str(fake_module))
+
+        # Mock git operations and subprocess
+        with (
+            patch("repo_cli.git_ops.get_current_branch") as mock_branch,
+            patch("repo_cli.git_ops.pull_latest") as mock_pull,
+            patch("subprocess.run") as mock_run,
+            patch("shutil.which") as mock_which,
+        ):
+            mock_branch.return_value = "feature-branch"  # Not main/master
+            mock_pull.return_value = None
+            mock_which.return_value = "/usr/bin/uv"  # uv available
+            mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0)
+
+            result = runner.invoke(app, ["upgrade", "--force"])
+
+            # Should succeed without confirmation prompts
+            assert result.exit_code == 0
+            assert "Upgrading repo-cli" in result.stdout
+            assert "Pulled latest changes" in result.stdout
+            # With --force, should not prompt about branch
+            mock_pull.assert_called_once()
+
+    def test_upgrade_uncommitted_changes_with_confirmation(self, tmp_path, monkeypatch):
+        """Should prompt when uncommitted changes exist (without --force)."""
+        import repo_cli
+
+        fake_install = tmp_path / "fake-install"
+        fake_git = fake_install / ".git"
+        fake_git.mkdir(parents=True)
+
+        fake_module = fake_install / "src" / "repo_cli" / "__init__.py"
+        fake_module.parent.mkdir(parents=True)
+        fake_module.touch()
+
+        monkeypatch.setattr(repo_cli, "__file__", str(fake_module))
+
+        with (
+            patch("repo_cli.git_ops.has_uncommitted_changes") as mock_changes,
+            patch("repo_cli.git_ops.get_current_branch") as mock_branch,
+        ):
+            mock_changes.return_value = True  # Has uncommitted changes
+            mock_branch.return_value = "main"
+
+            # User cancels when prompted
+            result = runner.invoke(app, ["upgrade"], input="n\n")
+
+            assert result.exit_code == 0
+            assert "uncommitted changes" in result.stdout
+            assert "Cancelled" in result.stdout
+
+    def test_upgrade_on_non_main_branch(self, tmp_path, monkeypatch):
+        """Should warn when on non-main/master branch."""
+        import repo_cli
+
+        fake_install = tmp_path / "fake-install"
+        fake_git = fake_install / ".git"
+        fake_git.mkdir(parents=True)
+
+        fake_module = fake_install / "src" / "repo_cli" / "__init__.py"
+        fake_module.parent.mkdir(parents=True)
+        fake_module.touch()
+
+        monkeypatch.setattr(repo_cli, "__file__", str(fake_module))
+
+        with (
+            patch("repo_cli.git_ops.has_uncommitted_changes") as mock_changes,
+            patch("repo_cli.git_ops.get_current_branch") as mock_branch,
+        ):
+            mock_changes.return_value = False
+            mock_branch.return_value = "develop"  # Not main/master
+
+            # User cancels when prompted about branch
+            result = runner.invoke(app, ["upgrade"], input="n\n")
+
+            assert result.exit_code == 0
+            assert "on branch 'develop'" in result.stdout
+            assert "Cancelled" in result.stdout
+
+    def test_upgrade_successful_with_uv(self, tmp_path, monkeypatch):
+        """Should successfully upgrade using uv."""
+        import repo_cli
+
+        fake_install = tmp_path / "fake-install"
+        fake_git = fake_install / ".git"
+        fake_git.mkdir(parents=True)
+
+        fake_module = fake_install / "src" / "repo_cli" / "__init__.py"
+        fake_module.parent.mkdir(parents=True)
+        fake_module.touch()
+
+        monkeypatch.setattr(repo_cli, "__file__", str(fake_module))
+
+        with (
+            patch("repo_cli.git_ops.has_uncommitted_changes") as mock_changes,
+            patch("repo_cli.git_ops.get_current_branch") as mock_branch,
+            patch("repo_cli.git_ops.pull_latest") as mock_pull,
+            patch("subprocess.run") as mock_run,
+            patch("shutil.which") as mock_which,
+        ):
+            mock_changes.return_value = False
+            mock_branch.return_value = "main"
+            mock_pull.return_value = None
+            mock_which.return_value = "/usr/bin/uv"
+            mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0)
+
+            result = runner.invoke(app, ["upgrade"])
+
+            assert result.exit_code == 0
+            assert "Upgrading repo-cli" in result.stdout
+            assert "Pulled latest changes" in result.stdout
+            assert "Dependencies updated (uv sync)" in result.stdout
+            assert "Upgrade complete!" in result.stdout
 
 
 class TestE2EWorkflow:
