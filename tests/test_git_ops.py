@@ -8,9 +8,11 @@ import pytest
 
 from repo_cli.git_ops import (
     GitOperationError,
+    _ensure_fetch_refspec,
     branch_exists,
     clone_bare,
     create_worktree,
+    fetch_repo,
     get_default_branch,
     init_submodules,
     remove_worktree,
@@ -22,7 +24,7 @@ class TestCloneBare:
 
     @patch("repo_cli.git_ops.subprocess.run")
     def test_clone_bare_success(self, mock_run):
-        """Should run git clone --bare command."""
+        """Should run git clone --bare command and configure refspec."""
         mock_run.return_value = MagicMock(returncode=0)
 
         url = "git@github.com:owner/repo.git"
@@ -30,8 +32,23 @@ class TestCloneBare:
 
         clone_bare(url, target_path)
 
-        mock_run.assert_called_once_with(
+        # Should call clone and then configure refspec
+        assert mock_run.call_count == 2
+        mock_run.assert_any_call(
             ["git", "clone", "--bare", url, str(target_path)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        mock_run.assert_any_call(
+            [
+                "git",
+                "-C",
+                str(target_path),
+                "config",
+                "remote.origin.fetch",
+                "+refs/heads/*:refs/remotes/origin/*",
+            ],
             check=True,
             capture_output=True,
             text=True,
@@ -45,6 +62,41 @@ class TestCloneBare:
         )
 
         with pytest.raises(GitOperationError, match="Failed to clone repository"):
+            clone_bare("invalid-url", Path("/tmp/test"))
+
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_clone_bare_config_failure_after_clone(self, mock_run):
+        """Should raise GitOperationError if config fails after successful clone."""
+        # Clone succeeds, but config fails
+        mock_run.side_effect = [
+            MagicMock(returncode=0),  # Clone succeeds
+            subprocess.CalledProcessError(
+                1, ["git", "config"], stderr="error: could not lock config file"
+            ),
+        ]
+
+        with pytest.raises(GitOperationError, match="Failed to clone repository"):
+            clone_bare("git@github.com:owner/repo.git", Path("/tmp/test/repo.git"))
+
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_clone_bare_clone_fails_no_config_attempted(self, mock_run):
+        """Should not attempt config if clone fails (call count = 1)."""
+        mock_run.side_effect = subprocess.CalledProcessError(
+            1, ["git", "clone"], stderr="fatal: repository not found"
+        )
+
+        with pytest.raises(GitOperationError):
+            clone_bare("invalid-url", Path("/tmp/test"))
+
+        # Only clone was attempted, not config
+        assert mock_run.call_count == 1
+
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_clone_bare_unknown_stderr_fallback(self, mock_run):
+        """Should show 'Unknown error' when clone fails with no stderr."""
+        mock_run.side_effect = subprocess.CalledProcessError(1, ["git", "clone"], stderr=None)
+
+        with pytest.raises(GitOperationError, match="Unknown error"):
             clone_bare("invalid-url", Path("/tmp/test"))
 
 
@@ -336,11 +388,14 @@ class TestCreateWorktree:
     @patch("repo_cli.git_ops.branch_exists")
     @patch("repo_cli.git_ops.subprocess.run")
     def test_create_worktree_existing_remote_only_branch(self, mock_run, mock_branch_exists):
-        """Should create local tracking branch for remote-only branch."""
+        """Should create local branch from remote using -B when no local exists."""
         mock_branch_exists.return_value = True
-        # First call checks for local branch (fails), second creates worktree
+        # 1. Check local branch (fails - doesn't exist)
+        # 2. Check remote branch (succeeds)
+        # 3. Worktree add with -B
         mock_run.side_effect = [
             subprocess.CalledProcessError(1, ["git"]),  # No local branch
+            MagicMock(returncode=0),  # Remote branch exists
             MagicMock(returncode=0),  # Worktree creation succeeds
         ]
 
@@ -353,8 +408,28 @@ class TestCreateWorktree:
         assert is_new is False
         assert actual_ref == "origin/6.0"
         mock_branch_exists.assert_called_once_with(repo_path, branch)
-        assert mock_run.call_count == 2
-        # Last call should create local tracking branch with -b flag
+        assert mock_run.call_count == 3
+        # First call should check for local branch
+        first_call = mock_run.call_args_list[0]
+        assert first_call[0][0] == [
+            "git",
+            "-C",
+            str(repo_path),
+            "show-ref",
+            "--verify",
+            "refs/heads/6.0",
+        ]
+        # Second call should check for remote-tracking branch
+        second_call = mock_run.call_args_list[1]
+        assert second_call[0][0] == [
+            "git",
+            "-C",
+            str(repo_path),
+            "show-ref",
+            "--verify",
+            "refs/remotes/origin/6.0",
+        ]
+        # Last call should use -B to create local branch from remote
         last_call = mock_run.call_args_list[-1]
         assert last_call[0][0] == [
             "git",
@@ -363,31 +438,43 @@ class TestCreateWorktree:
             "worktree",
             "add",
             str(worktree_path),
-            "-b",
+            "-B",
             "6.0",
             "origin/6.0",
         ]
 
     @patch("repo_cli.git_ops.branch_exists")
     @patch("repo_cli.git_ops.subprocess.run")
-    def test_create_worktree_existing_local_branch(self, mock_run, mock_branch_exists):
-        """Should checkout existing local branch directly."""
+    def test_create_worktree_existing_local_only_branch(self, mock_run, mock_branch_exists):
+        """Should checkout local branch directly to preserve unpushed commits."""
         mock_branch_exists.return_value = True
-        # First call checks for local branch (succeeds), second creates worktree
+        # 1. Check local branch (succeeds - exists)
+        # 2. Worktree add (uses local branch directly)
         mock_run.side_effect = [
             MagicMock(returncode=0),  # Local branch exists
             MagicMock(returncode=0),  # Worktree creation succeeds
         ]
 
         repo_path = Path("/tmp/test/repo.git")
-        worktree_path = Path("/tmp/test/repo-main")
-        branch = "main"
+        worktree_path = Path("/tmp/test/repo-local-feature")
+        branch = "local-feature"
 
         actual_ref, is_new = create_worktree(repo_path, worktree_path, branch)
 
         assert is_new is False
-        assert actual_ref == "main"
-        # Last call should checkout local branch directly
+        assert actual_ref == "local-feature"
+        assert mock_run.call_count == 2
+        # First call should check for local branch
+        first_call = mock_run.call_args_list[0]
+        assert first_call[0][0] == [
+            "git",
+            "-C",
+            str(repo_path),
+            "show-ref",
+            "--verify",
+            "refs/heads/local-feature",
+        ]
+        # Last call should checkout local branch directly (preserves any unpushed commits)
         last_call = mock_run.call_args_list[-1]
         assert last_call[0][0] == [
             "git",
@@ -396,8 +483,104 @@ class TestCreateWorktree:
             "worktree",
             "add",
             str(worktree_path),
-            "main",
+            "local-feature",
         ]
+
+    @patch("repo_cli.git_ops.branch_exists")
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_create_worktree_remote_branch_worktree_add_fails(self, mock_run, mock_branch_exists):
+        """Should raise GitOperationError when worktree add -B fails for remote branch."""
+        mock_branch_exists.return_value = True
+        # 1. Check local branch (fails - doesn't exist)
+        # 2. Check remote branch (succeeds)
+        # 3. Worktree add with -B (fails)
+        mock_run.side_effect = [
+            subprocess.CalledProcessError(1, ["git"]),  # No local branch
+            MagicMock(returncode=0),  # Remote branch exists
+            subprocess.CalledProcessError(
+                1, ["git"], stderr="fatal: 'feature' is already checked out"
+            ),
+        ]
+
+        repo_path = Path("/tmp/test/repo.git")
+        worktree_path = Path("/tmp/test/repo-feature")
+        branch = "feature"
+
+        with pytest.raises(GitOperationError, match="Failed to create worktree"):
+            create_worktree(repo_path, worktree_path, branch)
+
+    @patch("repo_cli.git_ops.branch_exists")
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_create_worktree_both_local_and_remote_uses_local(self, mock_run, mock_branch_exists):
+        """Should use local branch when both local and remote exist to preserve unpushed commits."""
+        mock_branch_exists.return_value = True
+        # 1. Check local branch (succeeds - exists)
+        # 2. Worktree add (uses local branch directly, NOT -B with remote)
+        # Note: remote check is never made because we early-return after finding local
+        mock_run.side_effect = [
+            MagicMock(returncode=0),  # Local branch exists
+            MagicMock(returncode=0),  # Worktree creation succeeds
+        ]
+
+        repo_path = Path("/tmp/test/repo.git")
+        worktree_path = Path("/tmp/test/repo-feature")
+        branch = "feature"
+
+        actual_ref, is_new = create_worktree(repo_path, worktree_path, branch)
+
+        assert is_new is False
+        # Key assertion: returns local branch name, NOT origin/feature
+        assert actual_ref == "feature"
+        assert mock_run.call_count == 2
+        # Last call should use local branch WITHOUT -B flag
+        last_call = mock_run.call_args_list[-1]
+        assert last_call[0][0] == [
+            "git",
+            "-C",
+            str(repo_path),
+            "worktree",
+            "add",
+            str(worktree_path),
+            "feature",
+        ]
+        # Verify -B is NOT in the command (critical - prevents data loss)
+        assert "-B" not in last_call[0][0]
+
+    @patch("repo_cli.git_ops.get_default_branch")
+    @patch("repo_cli.git_ops.branch_exists")
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_create_worktree_new_branch_worktree_add_fails(
+        self, mock_run, mock_branch_exists, mock_get_default
+    ):
+        """Should raise GitOperationError when worktree add -b fails for new branch."""
+        mock_branch_exists.return_value = False
+        mock_get_default.return_value = "main"
+        mock_run.side_effect = subprocess.CalledProcessError(
+            1, ["git"], stderr="fatal: invalid reference: main"
+        )
+
+        repo_path = Path("/tmp/test/repo.git")
+        worktree_path = Path("/tmp/test/repo-new-feature")
+        branch = "new-feature"
+
+        with pytest.raises(GitOperationError, match="Failed to create worktree"):
+            create_worktree(repo_path, worktree_path, branch)
+
+    @patch("repo_cli.git_ops.get_default_branch")
+    @patch("repo_cli.git_ops.branch_exists")
+    def test_create_worktree_default_branch_resolution_fails(
+        self, mock_branch_exists, mock_get_default
+    ):
+        """Should propagate GitOperationError when get_default_branch fails."""
+        mock_branch_exists.return_value = False
+        mock_get_default.side_effect = GitOperationError("Could not determine default branch")
+
+        repo_path = Path("/tmp/test/repo.git")
+        worktree_path = Path("/tmp/test/repo-new-feature")
+        branch = "new-feature"
+
+        with pytest.raises(GitOperationError, match="Could not determine default branch"):
+            create_worktree(repo_path, worktree_path, branch)
 
 
 class TestRemoveWorktree:
@@ -697,3 +880,214 @@ class TestInitSubmodules:
 
         with pytest.raises(GitOperationError, match="Failed to read .gitmodules"):
             init_submodules(worktree_path)
+
+
+class TestFetchRepo:
+    """Tests for fetch_repo function and refspec migration."""
+
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_fetch_repo_success(self, mock_run):
+        """Should fetch and ensure refspec is configured."""
+        # First call: check refspec (returns correct value)
+        # Second call: fetch
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="+refs/heads/*:refs/remotes/origin/*\n"),
+            MagicMock(returncode=0),
+        ]
+
+        repo_path = Path("/tmp/test/repo.git")
+        fetch_repo(repo_path)
+
+        assert mock_run.call_count == 2
+        # First call checks refspec
+        mock_run.assert_any_call(
+            ["git", "-C", str(repo_path), "config", "--get", "remote.origin.fetch"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        # Second call does the fetch
+        mock_run.assert_any_call(
+            ["git", "-C", str(repo_path), "fetch", "--prune", "origin"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_fetch_repo_migrates_missing_refspec(self, mock_run):
+        """Should configure refspec if missing (pre-v0.1.2 repos)."""
+        # First call: check refspec (empty/missing)
+        # Second call: set refspec
+        # Third call: fetch
+        mock_run.side_effect = [
+            MagicMock(returncode=1, stdout=""),  # No refspec configured
+            MagicMock(returncode=0),  # Set refspec succeeds
+            MagicMock(returncode=0),  # Fetch succeeds
+        ]
+
+        repo_path = Path("/tmp/test/repo.git")
+        fetch_repo(repo_path)
+
+        assert mock_run.call_count == 3
+        # Should have set the refspec
+        mock_run.assert_any_call(
+            [
+                "git",
+                "-C",
+                str(repo_path),
+                "config",
+                "remote.origin.fetch",
+                "+refs/heads/*:refs/remotes/origin/*",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_fetch_repo_failure(self, mock_run):
+        """Should raise GitOperationError on fetch failure."""
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="+refs/heads/*:refs/remotes/origin/*\n"),
+            subprocess.CalledProcessError(1, ["git"], stderr="network error"),
+        ]
+
+        with pytest.raises(GitOperationError, match="Failed to fetch repository"):
+            fetch_repo(Path("/tmp/test/repo.git"))
+
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_fetch_repo_migration_fails_but_fetch_proceeds(self, mock_run):
+        """Should still fetch even if migration config set fails."""
+        # First call: check refspec (empty)
+        # Second call: set refspec FAILS
+        # Third call: fetch succeeds
+        mock_run.side_effect = [
+            MagicMock(returncode=1, stdout=""),  # No refspec configured
+            subprocess.CalledProcessError(1, ["git"], stderr="permission denied"),  # Set fails
+            MagicMock(returncode=0),  # Fetch still succeeds
+        ]
+
+        repo_path = Path("/tmp/test/repo.git")
+        # Should not raise - migration failure is non-fatal
+        fetch_repo(repo_path)
+
+        assert mock_run.call_count == 3
+        # Fetch should still have been called
+        mock_run.assert_any_call(
+            ["git", "-C", str(repo_path), "fetch", "--prune", "origin"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_fetch_repo_failure_unknown_stderr(self, mock_run):
+        """Should show 'Unknown error' when fetch fails with no stderr."""
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="+refs/heads/*:refs/remotes/origin/*\n"),
+            subprocess.CalledProcessError(1, ["git"], stderr=None),
+        ]
+
+        with pytest.raises(GitOperationError, match="Unknown error"):
+            fetch_repo(Path("/tmp/test/repo.git"))
+
+
+class TestEnsureFetchRefspec:
+    """Tests for _ensure_fetch_refspec migration helper."""
+
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_refspec_already_correct(self, mock_run):
+        """Should not update if refspec is already correct."""
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout="+refs/heads/*:refs/remotes/origin/*\n"
+        )
+
+        repo_path = Path("/tmp/test/repo.git")
+        _ensure_fetch_refspec(repo_path)
+
+        # Only one call to check, no call to set
+        mock_run.assert_called_once_with(
+            ["git", "-C", str(repo_path), "config", "--get", "remote.origin.fetch"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_refspec_missing_gets_configured(self, mock_run):
+        """Should configure refspec if missing."""
+        mock_run.side_effect = [
+            MagicMock(returncode=1, stdout=""),  # No refspec
+            MagicMock(returncode=0),  # Set succeeds
+        ]
+
+        repo_path = Path("/tmp/test/repo.git")
+        _ensure_fetch_refspec(repo_path)
+
+        assert mock_run.call_count == 2
+        mock_run.assert_any_call(
+            [
+                "git",
+                "-C",
+                str(repo_path),
+                "config",
+                "remote.origin.fetch",
+                "+refs/heads/*:refs/remotes/origin/*",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_refspec_custom_not_overwritten(self, mock_run):
+        """Should NOT overwrite custom refspec (e.g., single branch)."""
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout="+refs/heads/main:refs/remotes/origin/main\n"
+        )
+
+        repo_path = Path("/tmp/test/repo.git")
+        _ensure_fetch_refspec(repo_path)
+
+        # Only one call to check - no call to set (respects user's custom config)
+        mock_run.assert_called_once()
+
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_refspec_config_failure_is_nonfatal(self, mock_run):
+        """Should not raise if setting refspec fails."""
+        mock_run.side_effect = [
+            MagicMock(returncode=1, stdout=""),
+            subprocess.CalledProcessError(1, ["git"], stderr="permission denied"),
+        ]
+
+        repo_path = Path("/tmp/test/repo.git")
+        # Should not raise
+        _ensure_fetch_refspec(repo_path)
+
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_refspec_whitespace_treated_as_missing(self, mock_run):
+        """Should configure refspec if stdout is only whitespace."""
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="   \n"),  # Whitespace only
+            MagicMock(returncode=0),  # Set succeeds
+        ]
+
+        repo_path = Path("/tmp/test/repo.git")
+        _ensure_fetch_refspec(repo_path)
+
+        # Should have called set because whitespace is treated as empty
+        assert mock_run.call_count == 2
+
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_refspec_get_config_failure_is_nonfatal(self, mock_run):
+        """Should not raise if get-config itself fails."""
+        # CalledProcessError on the get-config call (check=False but still raises)
+        mock_run.side_effect = subprocess.CalledProcessError(
+            128, ["git"], stderr="fatal: not in a git directory"
+        )
+
+        repo_path = Path("/tmp/test/repo.git")
+        # Should not raise - entire function is non-fatal
+        _ensure_fetch_refspec(repo_path)
+        assert mock_run.call_count == 1
