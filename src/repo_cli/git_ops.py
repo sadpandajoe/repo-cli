@@ -34,13 +34,72 @@ def clone_bare(url: str, target_path: Path) -> None:
             capture_output=True,
             text=True,
         )
+        # Configure fetch refspec so `git fetch origin` updates remote-tracking branches
+        # Without this, bare clones only fetch to FETCH_HEAD, not refs/remotes/origin/*
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(target_path),
+                "config",
+                "remote.origin.fetch",
+                "+refs/heads/*:refs/remotes/origin/*",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
     except subprocess.CalledProcessError as e:
         stderr = e.stderr.strip() if e.stderr else "Unknown error"
         raise GitOperationError(f"Failed to clone repository: {stderr}") from e
 
 
+def _ensure_fetch_refspec(repo_path: Path) -> None:
+    """Ensure the fetch refspec is configured for remote-tracking branches.
+
+    Migration for repos cloned before v0.1.2 that are missing the refspec.
+    Without this config, `git fetch origin` only updates FETCH_HEAD.
+
+    Only sets the refspec if it's missing/empty. Does NOT overwrite existing
+    custom configurations to avoid clobbering user settings.
+
+    Args:
+        repo_path: Path to the bare repository
+    """
+    try:
+        # Check current refspec
+        result = subprocess.run(
+            ["git", "-C", str(repo_path), "config", "--get", "remote.origin.fetch"],
+            capture_output=True,
+            text=True,
+            check=False,  # Don't raise if config doesn't exist
+        )
+        current_refspec = result.stdout.strip()
+
+        # Only set if missing/empty - don't overwrite custom user configurations
+        if not current_refspec:
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(repo_path),
+                    "config",
+                    "remote.origin.fetch",
+                    "+refs/heads/*:refs/remotes/origin/*",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+    except subprocess.CalledProcessError:
+        # Non-fatal: if we can't fix the refspec, fetch will still work (just to FETCH_HEAD)
+        pass
+
+
 def fetch_repo(repo_path: Path) -> None:
     """Fetch latest refs from origin.
+
+    Automatically migrates repos cloned before v0.1.2 to use proper refspec.
 
     Args:
         repo_path: Path to the bare repository
@@ -48,6 +107,9 @@ def fetch_repo(repo_path: Path) -> None:
     Raises:
         GitOperationError: If fetch fails
     """
+    # Migration: ensure refspec is configured (for pre-v0.1.2 repos)
+    _ensure_fetch_refspec(repo_path)
+
     try:
         subprocess.run(
             ["git", "-C", str(repo_path), "fetch", "--prune", "origin"],
@@ -202,7 +264,7 @@ def create_worktree(
 
     try:
         if existing:
-            # Check if local branch exists
+            # Check if local branch exists (refs/heads/<branch>)
             has_local = False
             try:
                 subprocess.run(
@@ -223,7 +285,7 @@ def create_worktree(
                 pass
 
             if has_local:
-                # Local branch exists, checkout directly
+                # Local branch exists - use it directly to preserve any unpushed commits
                 subprocess.run(
                     [
                         "git",
@@ -239,8 +301,29 @@ def create_worktree(
                     text=True,
                 )
                 return branch, False
-            else:
-                # Remote-only branch, create local tracking branch
+
+            # No local branch - check if remote-tracking branch exists
+            has_remote = False
+            try:
+                subprocess.run(
+                    [
+                        "git",
+                        "-C",
+                        str(repo_path),
+                        "show-ref",
+                        "--verify",
+                        f"refs/remotes/origin/{branch}",
+                    ],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                has_remote = True
+            except subprocess.CalledProcessError:
+                pass
+
+            if has_remote:
+                # Only remote exists - create local branch from remote using -B
                 subprocess.run(
                     [
                         "git",
@@ -249,7 +332,7 @@ def create_worktree(
                         "worktree",
                         "add",
                         str(worktree_path),
-                        "-b",
+                        "-B",
                         branch,
                         f"origin/{branch}",
                     ],

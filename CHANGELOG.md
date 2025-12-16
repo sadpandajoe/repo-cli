@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] - 2025-12-16
+
+### Fixed
+- **Bare Clone Fetch Refspec** - Configure `remote.origin.fetch` on bare clone so `git fetch origin` updates remote-tracking branches instead of just FETCH_HEAD
+- **Stale Local Branches** - `create_worktree` now prefers remote-tracking branches over potentially stale local refs, using `-B` to reset local branch from `origin/<branch>`
+- **Version Mismatch** - Synced `__init__.py` and `pyproject.toml` versions
+
+### Added
+- **Migration Helper** - `_ensure_fetch_refspec()` automatically migrates pre-v0.1.2 repos on first fetch (only sets if missing, preserves custom configs)
+- **9 new tests** for refspec configuration, migration, and worktree creation failure paths
+
+### Testing
+- **175 passing tests** (up from 140)
+- Verified on Python 3.11
+
+## [0.1.1] - 2025-12-03
+
+### Fixed
+- **HEAD Branch Creation Bug** - `get_default_branch()` now validates ref format, preventing branches named "HEAD" or "refs/remotes/origin/HEAD"
+- **Remote HEAD Resolution** - Properly resolves `refs/remotes/origin/HEAD` to actual target branch (develop, trunk, etc.)
+- **Master Fallback Validation** - Verifies master branch exists before returning as fallback, with clear error if neither main nor master exists
+
+### Testing
+- **140 passing tests** (up from 135)
+- 5 new tests for edge cases in default branch detection
+
 ## [0.1.0] - 2025-11-12
 
 ### Added
@@ -99,4 +125,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Full upgrade workflow not covered by automated tests (requires manual testing)
 - Tested primarily on macOS (Git 2.40.0, gh 2.60.1)
 
+[0.1.2]: https://github.com/sadpandajoe/repo-cli/releases/tag/v0.1.2
+[0.1.1]: https://github.com/sadpandajoe/repo-cli/releases/tag/v0.1.1
 [0.1.0]: https://github.com/sadpandajoe/repo-cli/releases/tag/v0.1.0
