@@ -9,6 +9,7 @@ import pytest
 from repo_cli.git_ops import (
     GitOperationError,
     _ensure_fetch_refspec,
+    _try_fast_forward_branch,
     branch_exists,
     clone_bare,
     create_worktree,
@@ -443,9 +444,12 @@ class TestCreateWorktree:
             "origin/6.0",
         ]
 
+    @patch("repo_cli.git_ops._try_fast_forward_branch")
     @patch("repo_cli.git_ops.branch_exists")
     @patch("repo_cli.git_ops.subprocess.run")
-    def test_create_worktree_existing_local_only_branch(self, mock_run, mock_branch_exists):
+    def test_create_worktree_existing_local_only_branch(
+        self, mock_run, mock_branch_exists, mock_ff
+    ):
         """Should checkout local branch directly to preserve unpushed commits."""
         mock_branch_exists.return_value = True
         # 1. Check local branch (succeeds - exists)
@@ -464,6 +468,7 @@ class TestCreateWorktree:
         assert is_new is False
         assert actual_ref == "local-feature"
         assert mock_run.call_count == 2
+        mock_ff.assert_called_once_with(repo_path, "local-feature")
         # First call should check for local branch
         first_call = mock_run.call_args_list[0]
         assert first_call[0][0] == [
@@ -509,9 +514,12 @@ class TestCreateWorktree:
         with pytest.raises(GitOperationError, match="Failed to create worktree"):
             create_worktree(repo_path, worktree_path, branch)
 
+    @patch("repo_cli.git_ops._try_fast_forward_branch")
     @patch("repo_cli.git_ops.branch_exists")
     @patch("repo_cli.git_ops.subprocess.run")
-    def test_create_worktree_both_local_and_remote_uses_local(self, mock_run, mock_branch_exists):
+    def test_create_worktree_both_local_and_remote_uses_local(
+        self, mock_run, mock_branch_exists, mock_ff
+    ):
         """Should use local branch when both local and remote exist to preserve unpushed commits."""
         mock_branch_exists.return_value = True
         # 1. Check local branch (succeeds - exists)
@@ -532,6 +540,7 @@ class TestCreateWorktree:
         # Key assertion: returns local branch name, NOT origin/feature
         assert actual_ref == "feature"
         assert mock_run.call_count == 2
+        mock_ff.assert_called_once_with(repo_path, "feature")
         # Last call should use local branch WITHOUT -B flag
         last_call = mock_run.call_args_list[-1]
         assert last_call[0][0] == [
@@ -581,6 +590,103 @@ class TestCreateWorktree:
 
         with pytest.raises(GitOperationError, match="Could not determine default branch"):
             create_worktree(repo_path, worktree_path, branch)
+
+
+class TestTryFastForwardBranch:
+    """Tests for _try_fast_forward_branch helper."""
+
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_fast_forwards_when_local_behind_remote(self, mock_run):
+        """Should update-ref when local is ancestor of remote."""
+        mock_run.side_effect = [
+            MagicMock(returncode=0),  # show-ref: remote exists
+            MagicMock(returncode=0),  # merge-base --is-ancestor: local is behind
+            MagicMock(returncode=0),  # update-ref: success
+        ]
+
+        repo_path = Path("/tmp/test/repo.git")
+        _try_fast_forward_branch(repo_path, "master")
+
+        assert mock_run.call_count == 3
+        # Verify update-ref was called with correct refs
+        update_call = mock_run.call_args_list[2]
+        assert update_call[0][0] == [
+            "git",
+            "-C",
+            str(repo_path),
+            "update-ref",
+            "refs/heads/master",
+            "refs/remotes/origin/master",
+        ]
+
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_skips_when_local_diverged_from_remote(self, mock_run):
+        """Should not update-ref when local has diverged (not an ancestor)."""
+        mock_run.side_effect = [
+            MagicMock(returncode=0),  # show-ref: remote exists
+            MagicMock(returncode=1),  # merge-base --is-ancestor: NOT ancestor (diverged)
+        ]
+
+        repo_path = Path("/tmp/test/repo.git")
+        _try_fast_forward_branch(repo_path, "feature-branch")
+
+        assert mock_run.call_count == 2
+        # Verify update-ref was NOT called
+        last_cmd = mock_run.call_args_list[-1][0][0]
+        assert "update-ref" not in last_cmd
+
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_skips_when_no_remote_branch(self, mock_run):
+        """Should return early when remote-tracking branch doesn't exist."""
+        mock_run.side_effect = [
+            subprocess.CalledProcessError(1, ["git"]),  # show-ref: no remote
+        ]
+
+        repo_path = Path("/tmp/test/repo.git")
+        _try_fast_forward_branch(repo_path, "local-only")
+
+        assert mock_run.call_count == 1
+        # Verify neither merge-base nor update-ref were called
+        last_cmd = mock_run.call_args_list[-1][0][0]
+        assert "merge-base" not in last_cmd
+
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_swallows_update_ref_failure(self, mock_run):
+        """Should not raise when update-ref fails (e.g., disk full)."""
+        mock_run.side_effect = [
+            MagicMock(returncode=0),  # show-ref: remote exists
+            MagicMock(returncode=0),  # merge-base: local is ancestor
+            subprocess.CalledProcessError(1, ["git"], stderr="error: unable to write"),
+        ]
+
+        repo_path = Path("/tmp/test/repo.git")
+        # Should not raise
+        _try_fast_forward_branch(repo_path, "master")
+
+        assert mock_run.call_count == 3
+
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_calls_update_ref_when_already_up_to_date(self, mock_run):
+        """Should call update-ref even when local equals remote (harmless no-op)."""
+        mock_run.side_effect = [
+            MagicMock(returncode=0),  # show-ref: remote exists
+            MagicMock(returncode=0),  # merge-base: equal commits are ancestors of each other
+            MagicMock(returncode=0),  # update-ref: writes same SHA (no-op)
+        ]
+
+        repo_path = Path("/tmp/test/repo.git")
+        _try_fast_forward_branch(repo_path, "main")
+
+        assert mock_run.call_count == 3
+        update_call = mock_run.call_args_list[2]
+        assert update_call[0][0] == [
+            "git",
+            "-C",
+            str(repo_path),
+            "update-ref",
+            "refs/heads/main",
+            "refs/remotes/origin/main",
+        ]
 
 
 class TestRemoveWorktree:

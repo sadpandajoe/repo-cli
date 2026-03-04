@@ -6,6 +6,7 @@ Provides high-level interfaces for git commands:
 - Initialize submodules
 """
 
+import contextlib
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -242,6 +243,73 @@ def branch_exists(repo_path: Path, branch: str) -> bool:
     return False
 
 
+def _try_fast_forward_branch(repo_path: Path, branch: str) -> None:
+    """Attempt to fast-forward a local branch to match its remote-tracking branch.
+
+    Safe: only updates when local is strictly behind remote (ancestor check).
+    Effectively no-op when: no remote branch exists, branches have diverged,
+    or local is already up-to-date (update-ref writes same SHA).
+
+    Args:
+        repo_path: Path to the bare repository
+        branch: Name of the local branch to fast-forward
+    """
+    # Step 1: Check if remote-tracking branch exists
+    try:
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo_path),
+                "show-ref",
+                "--verify",
+                f"refs/remotes/origin/{branch}",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError:
+        return  # No remote branch — nothing to fast-forward to
+
+    # Step 2: Check if fast-forward is possible (local is ancestor of remote)
+    # merge-base --is-ancestor returns: 0 = ancestor (or equal), 1 = not ancestor, 128 = error
+    # Any non-zero means we should skip fast-forward (diverged or error)
+    result = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo_path),
+            "merge-base",
+            "--is-ancestor",
+            f"refs/heads/{branch}",
+            f"refs/remotes/origin/{branch}",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return  # Not a clean fast-forward (diverged or git error) — preserve local branch
+
+    # Step 3: Fast-forward local ref to match remote
+    # update-ref with a ref name as new-value: git resolves it to SHA at call time
+    # Suppress failures (disk full, permissions, etc.) — proceed with stale branch
+    with contextlib.suppress(subprocess.CalledProcessError):
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo_path),
+                "update-ref",
+                f"refs/heads/{branch}",
+                f"refs/remotes/origin/{branch}",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+
 def create_worktree(
     repo_path: Path, worktree_path: Path, branch: str, start_point: str = "origin/HEAD"
 ) -> tuple[str, bool]:
@@ -285,7 +353,10 @@ def create_worktree(
                 pass
 
             if has_local:
-                # Local branch exists - use it directly to preserve any unpushed commits
+                # Fast-forward local branch to match remote if possible
+                _try_fast_forward_branch(repo_path, branch)
+
+                # Create worktree from (now possibly updated) local branch
                 subprocess.run(
                     [
                         "git",
