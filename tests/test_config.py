@@ -48,16 +48,22 @@ class TestParseGitHubUrl:
             parse_github_url("not-a-valid-url")
 
     def test_parse_github_enterprise_ssh(self):
-        """Should parse GitHub Enterprise SSH URLs."""
+        """Should parse GitHub Enterprise SSH URLs with enterprise_hosts."""
         url = "git@github.enterprise.com:owner/repo.git"
-        owner_repo = parse_github_url(url)
+        owner_repo = parse_github_url(url, enterprise_hosts=["github.enterprise.com"])
         assert owner_repo == "owner/repo"
 
     def test_parse_github_enterprise_https(self):
-        """Should parse GitHub Enterprise HTTPS URLs."""
+        """Should parse GitHub Enterprise HTTPS URLs with enterprise_hosts."""
         url = "https://github.mycompany.com/owner/repo.git"
-        owner_repo = parse_github_url(url)
+        owner_repo = parse_github_url(url, enterprise_hosts=["github.mycompany.com"])
         assert owner_repo == "owner/repo"
+
+    def test_parse_non_github_host_with_github_in_name(self):
+        """Should NOT match hosts that contain 'github' but aren't github.com."""
+        url = "git@notgithub.com:owner/repo.git"
+        owner_repo = parse_github_url(url)
+        assert owner_repo is None
 
     def test_parse_gitlab_url_graceful_degradation(self):
         """Should return None for GitLab URLs (graceful degradation)."""
@@ -229,8 +235,8 @@ class TestAtomicConfigWrites:
 
         save_config(config)
 
-        # Verify fsync was called
-        assert len(fsync_calls) == 1
+        # Verify fsync was called twice (file content + parent directory)
+        assert len(fsync_calls) == 2
 
     def test_save_config_temp_file_in_same_directory(self, tmp_path, monkeypatch):
         """Should create temp file in same directory as target (required for atomic replace)."""

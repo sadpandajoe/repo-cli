@@ -194,6 +194,19 @@ class TestGetDefaultBranch:
         ]
 
     @patch("repo_cli.git_ops.subprocess.run")
+    def test_get_default_branch_handles_remote_ref_with_slashes(self, mock_run):
+        """Should handle branch names containing slashes (e.g., release/2026)."""
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="refs/remotes/origin/HEAD\n"),
+            MagicMock(returncode=0, stdout="refs/remotes/origin/release/2026\n"),
+        ]
+
+        repo_path = Path("/tmp/test/repo.git")
+        result = get_default_branch(repo_path)
+
+        assert result == "release/2026"
+
+    @patch("repo_cli.git_ops.subprocess.run")
     def test_get_default_branch_handles_remote_ref_resolution_failure(self, mock_run):
         """Should fallback to main/master when remote HEAD resolution fails."""
         # First call returns "refs/remotes/origin/HEAD"
@@ -589,6 +602,28 @@ class TestCreateWorktree:
         branch = "new-feature"
 
         with pytest.raises(GitOperationError, match="Could not determine default branch"):
+            create_worktree(repo_path, worktree_path, branch)
+
+    @patch("repo_cli.git_ops._try_fast_forward_branch")
+    @patch("repo_cli.git_ops.branch_exists")
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_create_worktree_race_condition_neither_local_nor_remote(
+        self, mock_run, mock_branch_exists, mock_ff
+    ):
+        """Should raise GitOperationError when branch exists but neither ref is found (race)."""
+        mock_branch_exists.return_value = True
+        # 1. Check local branch (fails - gone)
+        # 2. Check remote branch (fails - gone)
+        mock_run.side_effect = [
+            subprocess.CalledProcessError(1, ["git"]),  # No local
+            subprocess.CalledProcessError(1, ["git"]),  # No remote
+        ]
+
+        repo_path = Path("/tmp/test/repo.git")
+        worktree_path = Path("/tmp/test/repo-ghost")
+        branch = "ghost-branch"
+
+        with pytest.raises(GitOperationError, match="could not be resolved"):
             create_worktree(repo_path, worktree_path, branch)
 
 

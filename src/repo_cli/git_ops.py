@@ -162,11 +162,12 @@ def get_default_branch(repo_path: Path) -> str:
                 )
                 resolved_ref = resolved.stdout.strip()
                 # Extract branch name from refs/remotes/origin/develop → develop
+                # Handle slashes in branch names: refs/remotes/origin/release/2026 → release/2026
                 if resolved_ref.startswith("refs/remotes/"):
-                    # Split by / and get the last component (branch name)
+                    # Strip refs/remotes/origin/ prefix (4 components)
                     parts = resolved_ref.split("/")
-                    if len(parts) >= 3:  # refs/remotes/origin/branch
-                        return parts[-1]
+                    if len(parts) >= 4:  # refs/remotes/origin/branch[/...]
+                        return "/".join(parts[3:])
             except subprocess.CalledProcessError:
                 # Resolution failed, fall through to fallback
                 pass
@@ -412,6 +413,12 @@ def create_worktree(
                     text=True,
                 )
                 return f"origin/{branch}", False
+            # Race condition: branch_exists() returned True but neither local nor remote
+            # ref could be verified (transient state). Raise rather than return None.
+            raise GitOperationError(
+                f"Branch '{branch}' was detected but could not be resolved. "
+                "This may be a transient state — try again."
+            )
         else:
             # Create new branch
             # Resolve origin/HEAD to actual default branch for bare repos

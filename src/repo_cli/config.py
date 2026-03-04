@@ -205,6 +205,13 @@ def save_config(config: dict[str, Any]) -> None:
 
         # Atomic replace (POSIX guarantees atomicity)
         os.replace(temp_path, config_path)
+
+        # Fsync parent directory to ensure rename metadata is durable after power loss
+        dir_fd = os.open(str(config_path.parent), os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
     except Exception:
         # Clean up temp file on error
         Path(temp_path).unlink(missing_ok=True)
@@ -247,7 +254,7 @@ def parse_github_url(
     def is_github_host(host: str) -> bool:
         """Check if host is GitHub.com, GHE, or in enterprise allowlist."""
         host_lower = host.lower()
-        return "github" in host_lower or host_lower in ghe_hosts
+        return host_lower == "github.com" or host_lower in ghe_hosts
 
     # SSH format: git@{host}:{owner}/{repo}.git
     ssh_pattern = r"git@([^:]+):([^/]+/[^/]+?)(\.git)?$"
