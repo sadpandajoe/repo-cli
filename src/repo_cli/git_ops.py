@@ -563,6 +563,7 @@ def init_submodules(worktree_path: Path) -> int:
         return 0
 
     # Initialize each non-.github submodule individually
+    # --remote: fetch latest from submodule's tracking branch instead of pinned commit
     try:
         for path in submodule_paths:
             subprocess.run(
@@ -574,6 +575,7 @@ def init_submodules(worktree_path: Path) -> int:
                     "update",
                     "--init",
                     "--recursive",
+                    "--remote",
                     path,
                 ],
                 check=True,
