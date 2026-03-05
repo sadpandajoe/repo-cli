@@ -1,5 +1,6 @@
 """Main CLI entry point for repo-cli."""
 
+import contextlib
 import platform
 import subprocess
 import sys
@@ -333,6 +334,10 @@ def create(
             except git_ops.GitOperationError as e:
                 console.print(f"✗ {e}", style="red")
                 sys.exit(1)
+
+            # Fetch to populate refs/remotes/origin/* and clean up stale local branches
+            with contextlib.suppress(git_ops.GitOperationError):
+                git_ops.fetch_repo(bare_repo_path)
         else:
             # Fetch latest refs so we can see new remote branches
             try:

@@ -803,8 +803,8 @@ class TestCleanupStaleLocalBranches:
     """Tests for _cleanup_stale_local_branches helper."""
 
     @patch("repo_cli.git_ops.subprocess.run")
-    def test_removes_branches_matching_remote(self, mock_run):
-        """Should delete local branches with same SHA as remote counterpart."""
+    def test_removes_non_head_non_worktree_branches(self, mock_run):
+        """Should delete any local branch that's not HEAD and not in a worktree."""
         mock_run.side_effect = [
             # symbolic-ref HEAD
             MagicMock(returncode=0, stdout="refs/heads/master\n"),
@@ -813,14 +813,11 @@ class TestCleanupStaleLocalBranches:
             # for-each-ref refs/heads/
             MagicMock(
                 returncode=0,
-                stdout="refs/heads/master abc123\nrefs/heads/stale-feature def456\n",
-            ),
-            # for-each-ref refs/remotes/origin/
-            MagicMock(
-                returncode=0,
-                stdout="refs/remotes/origin/master abc123\nrefs/remotes/origin/stale-feature def456\n",
+                stdout="refs/heads/master\nrefs/heads/stale-feature\nrefs/heads/old-branch\n",
             ),
             # update-ref -d refs/heads/stale-feature
+            MagicMock(returncode=0),
+            # update-ref -d refs/heads/old-branch
             MagicMock(returncode=0),
         ]
 
@@ -828,9 +825,9 @@ class TestCleanupStaleLocalBranches:
         _cleanup_stale_local_branches(repo_path)
 
         assert mock_run.call_count == 5
-        # Verify the stale branch was deleted
-        delete_call = mock_run.call_args_list[4]
-        assert delete_call[0][0] == [
+        # Verify both stale branches were deleted
+        delete_call_1 = mock_run.call_args_list[3]
+        assert delete_call_1[0][0] == [
             "git",
             "-C",
             str(repo_path),
@@ -838,24 +835,31 @@ class TestCleanupStaleLocalBranches:
             "-d",
             "refs/heads/stale-feature",
         ]
+        delete_call_2 = mock_run.call_args_list[4]
+        assert delete_call_2[0][0] == [
+            "git",
+            "-C",
+            str(repo_path),
+            "update-ref",
+            "-d",
+            "refs/heads/old-branch",
+        ]
 
     @patch("repo_cli.git_ops.subprocess.run")
     def test_keeps_head_branch(self, mock_run):
-        """Should never delete HEAD branch even if SHA matches remote."""
+        """Should never delete HEAD branch."""
         mock_run.side_effect = [
             MagicMock(returncode=0, stdout="refs/heads/master\n"),
             MagicMock(returncode=0, stdout=""),
             # Only master exists, and it's HEAD
-            MagicMock(returncode=0, stdout="refs/heads/master abc123\n"),
-            MagicMock(returncode=0, stdout="refs/remotes/origin/master abc123\n"),
+            MagicMock(returncode=0, stdout="refs/heads/master\n"),
             # No update-ref call expected
         ]
 
         repo_path = Path("/tmp/repo.git")
         _cleanup_stale_local_branches(repo_path)
 
-        # Only 4 calls (no update-ref)
-        assert mock_run.call_count == 4
+        assert mock_run.call_count == 3
 
     @patch("repo_cli.git_ops.subprocess.run")
     def test_keeps_worktree_branches(self, mock_run):
@@ -873,11 +877,7 @@ class TestCleanupStaleLocalBranches:
             ),
             MagicMock(
                 returncode=0,
-                stdout="refs/heads/master abc123\nrefs/heads/feature def456\n",
-            ),
-            MagicMock(
-                returncode=0,
-                stdout="refs/remotes/origin/master abc123\nrefs/remotes/origin/feature def456\n",
+                stdout="refs/heads/master\nrefs/heads/feature\n",
             ),
             # No update-ref: master is HEAD, feature is checked out
         ]
@@ -885,49 +885,63 @@ class TestCleanupStaleLocalBranches:
         repo_path = Path("/tmp/repo.git")
         _cleanup_stale_local_branches(repo_path)
 
-        assert mock_run.call_count == 4
+        assert mock_run.call_count == 3
 
     @patch("repo_cli.git_ops.subprocess.run")
-    def test_keeps_diverged_branches(self, mock_run):
-        """Should not delete branches with different SHA than remote (unpushed work)."""
+    def test_deletes_branches_with_no_remote(self, mock_run):
+        """Should delete local-only branches (no remote counterpart)."""
         mock_run.side_effect = [
             MagicMock(returncode=0, stdout="refs/heads/master\n"),
             MagicMock(returncode=0, stdout=""),
             MagicMock(
                 returncode=0,
-                stdout="refs/heads/master abc123\nrefs/heads/diverged local111\n",
+                stdout="refs/heads/master\nrefs/heads/local-only\n",
             ),
-            MagicMock(
-                returncode=0,
-                stdout="refs/remotes/origin/master abc123\nrefs/remotes/origin/diverged remote222\n",
-            ),
-            # No update-ref: diverged has different SHA
+            # update-ref -d refs/heads/local-only
+            MagicMock(returncode=0),
         ]
 
         repo_path = Path("/tmp/repo.git")
         _cleanup_stale_local_branches(repo_path)
 
         assert mock_run.call_count == 4
+        delete_call = mock_run.call_args_list[3]
+        assert delete_call[0][0] == [
+            "git",
+            "-C",
+            str(repo_path),
+            "update-ref",
+            "-d",
+            "refs/heads/local-only",
+        ]
 
     @patch("repo_cli.git_ops.subprocess.run")
-    def test_keeps_local_only_branches(self, mock_run):
-        """Should not delete branches without a remote counterpart."""
+    def test_deletes_branches_with_different_sha(self, mock_run):
+        """Should delete diverged branches (different SHA from remote)."""
         mock_run.side_effect = [
             MagicMock(returncode=0, stdout="refs/heads/master\n"),
             MagicMock(returncode=0, stdout=""),
             MagicMock(
                 returncode=0,
-                stdout="refs/heads/master abc123\nrefs/heads/local-only def456\n",
+                stdout="refs/heads/master\nrefs/heads/diverged\n",
             ),
-            # Remote has no local-only branch
-            MagicMock(returncode=0, stdout="refs/remotes/origin/master abc123\n"),
-            # No update-ref
+            # update-ref -d refs/heads/diverged
+            MagicMock(returncode=0),
         ]
 
         repo_path = Path("/tmp/repo.git")
         _cleanup_stale_local_branches(repo_path)
 
         assert mock_run.call_count == 4
+        delete_call = mock_run.call_args_list[3]
+        assert delete_call[0][0] == [
+            "git",
+            "-C",
+            str(repo_path),
+            "update-ref",
+            "-d",
+            "refs/heads/diverged",
+        ]
 
     @patch("repo_cli.git_ops.subprocess.run")
     def test_handles_empty_repo(self, mock_run):
@@ -936,36 +950,22 @@ class TestCleanupStaleLocalBranches:
             MagicMock(returncode=0, stdout="refs/heads/master\n"),
             MagicMock(returncode=0, stdout=""),
             MagicMock(returncode=0, stdout=""),  # No local branches
-            MagicMock(returncode=0, stdout=""),  # No remote branches
         ]
 
         repo_path = Path("/tmp/repo.git")
         _cleanup_stale_local_branches(repo_path)
 
-        assert mock_run.call_count == 4
+        assert mock_run.call_count == 3
 
     @patch("repo_cli.git_ops.subprocess.run")
-    def test_skips_remote_head_ref(self, mock_run):
-        """Should not treat refs/remotes/origin/HEAD as a branch to match."""
-        mock_run.side_effect = [
-            MagicMock(returncode=0, stdout="refs/heads/master\n"),
-            MagicMock(returncode=0, stdout=""),
-            MagicMock(
-                returncode=0,
-                stdout="refs/heads/master abc123\n",
-            ),
-            # Remote includes HEAD symbolic ref
-            MagicMock(
-                returncode=0,
-                stdout="refs/remotes/origin/HEAD abc123\nrefs/remotes/origin/master abc123\n",
-            ),
-        ]
+    def test_returns_early_on_head_failure(self, mock_run):
+        """Should return early if symbolic-ref HEAD fails."""
+        mock_run.side_effect = subprocess.CalledProcessError(1, "git")
 
         repo_path = Path("/tmp/repo.git")
         _cleanup_stale_local_branches(repo_path)
 
-        # master is HEAD, so no deletion. HEAD in remote is filtered out.
-        assert mock_run.call_count == 4
+        assert mock_run.call_count == 1
 
 
 class TestRemoveWorktree:

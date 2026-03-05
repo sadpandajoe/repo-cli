@@ -306,15 +306,15 @@ def _set_upstream_tracking(repo_path: Path, branch: str) -> None:
 
 
 def _cleanup_stale_local_branches(repo_path: Path) -> None:
-    """Remove local branches that are exact duplicates of remote-tracking branches.
+    """Remove local branches not needed in a bare repo.
 
-    After bare clone, refs/heads/* contains copies of all remote branches.
-    This cleans up branches where the local ref points to the same commit
-    as refs/remotes/origin/<branch>, keeping:
-    - HEAD branch (always needed)
+    In a repo-cli bare repo, the only local branches that should exist are:
+    - HEAD branch (the default branch)
     - Branches checked out in worktrees
-    - Branches with unpushed local commits (different SHA)
-    - Branches without a remote counterpart
+
+    Everything else under refs/heads/* is a stale artifact from bare clone
+    and should be deleted. Remote-tracking refs (refs/remotes/origin/*) are
+    the authoritative source for branch state.
     """
     # Get HEAD ref to protect it
     try:
@@ -343,7 +343,7 @@ def _cleanup_stale_local_branches(repo_path: Path) -> None:
     except subprocess.CalledProcessError:
         return
 
-    # Get all local branches with SHAs
+    # Get all local branch refs
     try:
         result = subprocess.run(
             [
@@ -351,7 +351,7 @@ def _cleanup_stale_local_branches(repo_path: Path) -> None:
                 "-C",
                 str(repo_path),
                 "for-each-ref",
-                "--format=%(refname) %(objectname)",
+                "--format=%(refname)",
                 "refs/heads/",
             ],
             check=True,
@@ -361,58 +361,20 @@ def _cleanup_stale_local_branches(repo_path: Path) -> None:
     except subprocess.CalledProcessError:
         return
 
-    local_branches: dict[str, str] = {}
+    # Delete any local branch that's not HEAD and not checked out in a worktree
     for line in result.stdout.strip().split("\n"):
-        if not line:
+        ref = line.strip()
+        if not ref:
             continue
-        parts = line.split(" ", 1)
-        if len(parts) == 2:
-            local_branches[parts[0]] = parts[1]
-
-    # Get all remote branches with SHAs
-    try:
-        result = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(repo_path),
-                "for-each-ref",
-                "--format=%(refname) %(objectname)",
-                "refs/remotes/origin/",
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-    except subprocess.CalledProcessError:
-        return
-
-    remote_shas: dict[str, str] = {}
-    for line in result.stdout.strip().split("\n"):
-        if not line:
-            continue
-        parts = line.split(" ", 1)
-        if len(parts) == 2:
-            branch_name = parts[0][len("refs/remotes/origin/") :]
-            if branch_name != "HEAD":  # Skip symbolic ref
-                remote_shas[branch_name] = parts[1]
-
-    # Delete stale branches: same SHA as remote, not HEAD, not checked out
-    for ref, local_sha in local_branches.items():
         if ref == head_ref or ref in checked_out:
             continue
-
-        branch_name = ref[len("refs/heads/") :]
-        remote_sha = remote_shas.get(branch_name)
-
-        if remote_sha and local_sha == remote_sha:
-            with contextlib.suppress(subprocess.CalledProcessError):
-                subprocess.run(
-                    ["git", "-C", str(repo_path), "update-ref", "-d", ref],
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                )
+        with contextlib.suppress(subprocess.CalledProcessError):
+            subprocess.run(
+                ["git", "-C", str(repo_path), "update-ref", "-d", ref],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
 
 
 def _try_fast_forward_branch(repo_path: Path, branch: str) -> None:
