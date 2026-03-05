@@ -8,7 +8,9 @@ import pytest
 
 from repo_cli.git_ops import (
     GitOperationError,
+    _cleanup_stale_local_branches,
     _ensure_fetch_refspec,
+    _set_upstream_tracking,
     _try_fast_forward_branch,
     branch_exists,
     clone_bare,
@@ -399,9 +401,12 @@ class TestCreateWorktree:
             text=True,
         )
 
+    @patch("repo_cli.git_ops._set_upstream_tracking")
     @patch("repo_cli.git_ops.branch_exists")
     @patch("repo_cli.git_ops.subprocess.run")
-    def test_create_worktree_existing_remote_only_branch(self, mock_run, mock_branch_exists):
+    def test_create_worktree_existing_remote_only_branch(
+        self, mock_run, mock_branch_exists, mock_tracking
+    ):
         """Should create local branch from remote using -B when no local exists."""
         mock_branch_exists.return_value = True
         # 1. Check local branch (fails - doesn't exist)
@@ -457,11 +462,12 @@ class TestCreateWorktree:
             "origin/6.0",
         ]
 
+    @patch("repo_cli.git_ops._set_upstream_tracking")
     @patch("repo_cli.git_ops._try_fast_forward_branch")
     @patch("repo_cli.git_ops.branch_exists")
     @patch("repo_cli.git_ops.subprocess.run")
     def test_create_worktree_existing_local_only_branch(
-        self, mock_run, mock_branch_exists, mock_ff
+        self, mock_run, mock_branch_exists, mock_ff, mock_tracking
     ):
         """Should checkout local branch directly to preserve unpushed commits."""
         mock_branch_exists.return_value = True
@@ -527,11 +533,12 @@ class TestCreateWorktree:
         with pytest.raises(GitOperationError, match="Failed to create worktree"):
             create_worktree(repo_path, worktree_path, branch)
 
+    @patch("repo_cli.git_ops._set_upstream_tracking")
     @patch("repo_cli.git_ops._try_fast_forward_branch")
     @patch("repo_cli.git_ops.branch_exists")
     @patch("repo_cli.git_ops.subprocess.run")
     def test_create_worktree_both_local_and_remote_uses_local(
-        self, mock_run, mock_branch_exists, mock_ff
+        self, mock_run, mock_branch_exists, mock_ff, mock_tracking
     ):
         """Should use local branch when both local and remote exist to preserve unpushed commits."""
         mock_branch_exists.return_value = True
@@ -724,6 +731,243 @@ class TestTryFastForwardBranch:
         ]
 
 
+class TestSetUpstreamTracking:
+    """Tests for _set_upstream_tracking helper."""
+
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_sets_tracking_when_remote_exists(self, mock_run):
+        """Should set branch.<name>.remote and .merge when remote branch exists."""
+        mock_run.side_effect = [
+            MagicMock(returncode=0),  # show-ref: remote exists
+            MagicMock(returncode=0),  # config branch.master.remote
+            MagicMock(returncode=0),  # config branch.master.merge
+        ]
+
+        repo_path = Path("/tmp/test/repo.git")
+        _set_upstream_tracking(repo_path, "master")
+
+        assert mock_run.call_count == 3
+        # Verify remote check
+        assert mock_run.call_args_list[0][0][0] == [
+            "git",
+            "-C",
+            str(repo_path),
+            "show-ref",
+            "--verify",
+            "refs/remotes/origin/master",
+        ]
+        # Verify config calls
+        assert mock_run.call_args_list[1][0][0] == [
+            "git",
+            "-C",
+            str(repo_path),
+            "config",
+            "branch.master.remote",
+            "origin",
+        ]
+        assert mock_run.call_args_list[2][0][0] == [
+            "git",
+            "-C",
+            str(repo_path),
+            "config",
+            "branch.master.merge",
+            "refs/heads/master",
+        ]
+
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_skips_when_no_remote_branch(self, mock_run):
+        """Should not set config when no remote-tracking branch exists."""
+        mock_run.side_effect = [
+            subprocess.CalledProcessError(1, ["git"]),  # show-ref: no remote
+        ]
+
+        repo_path = Path("/tmp/test/repo.git")
+        _set_upstream_tracking(repo_path, "local-only")
+
+        assert mock_run.call_count == 1
+
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_suppresses_config_errors(self, mock_run):
+        """Should not raise when config calls fail."""
+        mock_run.side_effect = [
+            MagicMock(returncode=0),  # show-ref: remote exists
+            subprocess.CalledProcessError(1, ["git"], stderr="permission denied"),
+        ]
+
+        repo_path = Path("/tmp/test/repo.git")
+        # Should not raise
+        _set_upstream_tracking(repo_path, "master")
+
+
+class TestCleanupStaleLocalBranches:
+    """Tests for _cleanup_stale_local_branches helper."""
+
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_removes_branches_matching_remote(self, mock_run):
+        """Should delete local branches with same SHA as remote counterpart."""
+        mock_run.side_effect = [
+            # symbolic-ref HEAD
+            MagicMock(returncode=0, stdout="refs/heads/master\n"),
+            # worktree list --porcelain (bare repo only)
+            MagicMock(returncode=0, stdout="worktree /tmp/repo.git\nHEAD abc123\nbare\n\n"),
+            # for-each-ref refs/heads/
+            MagicMock(
+                returncode=0,
+                stdout="refs/heads/master abc123\nrefs/heads/stale-feature def456\n",
+            ),
+            # for-each-ref refs/remotes/origin/
+            MagicMock(
+                returncode=0,
+                stdout="refs/remotes/origin/master abc123\nrefs/remotes/origin/stale-feature def456\n",
+            ),
+            # update-ref -d refs/heads/stale-feature
+            MagicMock(returncode=0),
+        ]
+
+        repo_path = Path("/tmp/repo.git")
+        _cleanup_stale_local_branches(repo_path)
+
+        assert mock_run.call_count == 5
+        # Verify the stale branch was deleted
+        delete_call = mock_run.call_args_list[4]
+        assert delete_call[0][0] == [
+            "git",
+            "-C",
+            str(repo_path),
+            "update-ref",
+            "-d",
+            "refs/heads/stale-feature",
+        ]
+
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_keeps_head_branch(self, mock_run):
+        """Should never delete HEAD branch even if SHA matches remote."""
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="refs/heads/master\n"),
+            MagicMock(returncode=0, stdout=""),
+            # Only master exists, and it's HEAD
+            MagicMock(returncode=0, stdout="refs/heads/master abc123\n"),
+            MagicMock(returncode=0, stdout="refs/remotes/origin/master abc123\n"),
+            # No update-ref call expected
+        ]
+
+        repo_path = Path("/tmp/repo.git")
+        _cleanup_stale_local_branches(repo_path)
+
+        # Only 4 calls (no update-ref)
+        assert mock_run.call_count == 4
+
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_keeps_worktree_branches(self, mock_run):
+        """Should not delete branches checked out in worktrees."""
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="refs/heads/master\n"),
+            # Worktree list shows feature is checked out
+            MagicMock(
+                returncode=0,
+                stdout=(
+                    "worktree /tmp/repo.git\nHEAD abc123\nbare\n\n"
+                    "worktree /tmp/repo-feature\nHEAD def456\n"
+                    "branch refs/heads/feature\n\n"
+                ),
+            ),
+            MagicMock(
+                returncode=0,
+                stdout="refs/heads/master abc123\nrefs/heads/feature def456\n",
+            ),
+            MagicMock(
+                returncode=0,
+                stdout="refs/remotes/origin/master abc123\nrefs/remotes/origin/feature def456\n",
+            ),
+            # No update-ref: master is HEAD, feature is checked out
+        ]
+
+        repo_path = Path("/tmp/repo.git")
+        _cleanup_stale_local_branches(repo_path)
+
+        assert mock_run.call_count == 4
+
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_keeps_diverged_branches(self, mock_run):
+        """Should not delete branches with different SHA than remote (unpushed work)."""
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="refs/heads/master\n"),
+            MagicMock(returncode=0, stdout=""),
+            MagicMock(
+                returncode=0,
+                stdout="refs/heads/master abc123\nrefs/heads/diverged local111\n",
+            ),
+            MagicMock(
+                returncode=0,
+                stdout="refs/remotes/origin/master abc123\nrefs/remotes/origin/diverged remote222\n",
+            ),
+            # No update-ref: diverged has different SHA
+        ]
+
+        repo_path = Path("/tmp/repo.git")
+        _cleanup_stale_local_branches(repo_path)
+
+        assert mock_run.call_count == 4
+
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_keeps_local_only_branches(self, mock_run):
+        """Should not delete branches without a remote counterpart."""
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="refs/heads/master\n"),
+            MagicMock(returncode=0, stdout=""),
+            MagicMock(
+                returncode=0,
+                stdout="refs/heads/master abc123\nrefs/heads/local-only def456\n",
+            ),
+            # Remote has no local-only branch
+            MagicMock(returncode=0, stdout="refs/remotes/origin/master abc123\n"),
+            # No update-ref
+        ]
+
+        repo_path = Path("/tmp/repo.git")
+        _cleanup_stale_local_branches(repo_path)
+
+        assert mock_run.call_count == 4
+
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_handles_empty_repo(self, mock_run):
+        """Should handle repos with no branches gracefully."""
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="refs/heads/master\n"),
+            MagicMock(returncode=0, stdout=""),
+            MagicMock(returncode=0, stdout=""),  # No local branches
+            MagicMock(returncode=0, stdout=""),  # No remote branches
+        ]
+
+        repo_path = Path("/tmp/repo.git")
+        _cleanup_stale_local_branches(repo_path)
+
+        assert mock_run.call_count == 4
+
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_skips_remote_head_ref(self, mock_run):
+        """Should not treat refs/remotes/origin/HEAD as a branch to match."""
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="refs/heads/master\n"),
+            MagicMock(returncode=0, stdout=""),
+            MagicMock(
+                returncode=0,
+                stdout="refs/heads/master abc123\n",
+            ),
+            # Remote includes HEAD symbolic ref
+            MagicMock(
+                returncode=0,
+                stdout="refs/remotes/origin/HEAD abc123\nrefs/remotes/origin/master abc123\n",
+            ),
+        ]
+
+        repo_path = Path("/tmp/repo.git")
+        _cleanup_stale_local_branches(repo_path)
+
+        # master is HEAD, so no deletion. HEAD in remote is filtered out.
+        assert mock_run.call_count == 4
+
+
 class TestRemoveWorktree:
     """Tests for remove_worktree function."""
 
@@ -854,28 +1098,26 @@ class TestInitSubmodules:
     @patch("repo_cli.git_ops.subprocess.run")
     def test_init_submodules_with_submodules_present(self, mock_run, tmp_path):
         """Should initialize non-.github submodules individually."""
-        mock_run.return_value = MagicMock(returncode=0)
+        # First call: git config -f (parse .gitmodules)
+        # Subsequent calls: git submodule update for each submodule
+        config_result = MagicMock(
+            returncode=0,
+            stdout="submodule.sub1.path sub1\nsubmodule.sub2.path sub2\nsubmodule.sub3.path sub3\n",
+        )
+        update_result = MagicMock(returncode=0)
+        mock_run.side_effect = [config_result, update_result, update_result, update_result]
 
-        # Create a mock .gitmodules file with 3 submodules
+        # Create a mock .gitmodules file (must exist for path check)
         worktree_path = tmp_path / "repo-branch"
         worktree_path.mkdir()
         gitmodules = worktree_path / ".gitmodules"
-        gitmodules.write_text("""[submodule "sub1"]
-    path = sub1
-    url = https://github.com/owner/sub1.git
-[submodule "sub2"]
-    path = sub2
-    url = https://github.com/owner/sub2.git
-[submodule "sub3"]
-    path = sub3
-    url = https://github.com/owner/sub3.git
-""")
+        gitmodules.write_text("")
 
         count = init_submodules(worktree_path)
 
         assert count == 3
-        # Should be called once per submodule
-        assert mock_run.call_count == 3
+        # 1 config parse + 3 submodule updates
+        assert mock_run.call_count == 4
         # Check that each submodule was initialized individually
         mock_run.assert_any_call(
             [
@@ -929,32 +1171,30 @@ class TestInitSubmodules:
     @patch("repo_cli.git_ops.subprocess.run")
     def test_init_submodules_skips_github_submodules(self, mock_run, tmp_path):
         """Should skip .github submodules (CI/CD actions)."""
-        mock_run.return_value = MagicMock(returncode=0)
+        # git config -f returns all paths including .github ones
+        config_result = MagicMock(
+            returncode=0,
+            stdout=(
+                "submodule.vendor/lib.path vendor/lib\n"
+                "submodule..github/actions/setup.path .github/actions/setup\n"
+                "submodule.core/engine.path core/engine\n"
+                "submodule..github/actions/test.path .github/actions/test\n"
+            ),
+        )
+        update_result = MagicMock(returncode=0)
+        mock_run.side_effect = [config_result, update_result, update_result]
 
-        # Create .gitmodules with mix of regular and .github submodules
         worktree_path = tmp_path / "repo-branch"
         worktree_path.mkdir()
         gitmodules = worktree_path / ".gitmodules"
-        gitmodules.write_text("""[submodule "vendor/lib"]
-    path = vendor/lib
-    url = https://github.com/owner/lib.git
-[submodule ".github/actions/setup"]
-    path = .github/actions/setup
-    url = https://github.com/owner/setup.git
-[submodule "core/engine"]
-    path = core/engine
-    url = https://github.com/owner/engine.git
-[submodule ".github/actions/test"]
-    path = .github/actions/test
-    url = https://github.com/owner/test.git
-""")
+        gitmodules.write_text("")
 
         count = init_submodules(worktree_path)
 
         # Should only count non-.github submodules
         assert count == 2
-        # Should only initialize non-.github submodules
-        assert mock_run.call_count == 2
+        # 1 config parse + 2 submodule updates
+        assert mock_run.call_count == 3
         mock_run.assert_any_call(
             [
                 "git",
@@ -988,23 +1228,29 @@ class TestInitSubmodules:
             text=True,
         )
 
-    def test_init_submodules_with_only_github_submodules(self, tmp_path):
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_init_submodules_with_only_github_submodules(self, mock_run, tmp_path):
         """Should return 0 when only .github submodules exist."""
+        config_result = MagicMock(
+            returncode=0,
+            stdout=(
+                "submodule..github/actions/setup.path .github/actions/setup\n"
+                "submodule..github/actions/test.path .github/actions/test\n"
+            ),
+        )
+        mock_run.return_value = config_result
+
         worktree_path = tmp_path / "repo-branch"
         worktree_path.mkdir()
         gitmodules = worktree_path / ".gitmodules"
-        gitmodules.write_text("""[submodule ".github/actions/setup"]
-    path = .github/actions/setup
-    url = https://github.com/owner/setup.git
-[submodule ".github/actions/test"]
-    path = .github/actions/test
-    url = https://github.com/owner/test.git
-""")
+        gitmodules.write_text("")
 
         count = init_submodules(worktree_path)
 
         # Should return 0 since all submodules are in .github
         assert count == 0
+        # Only the config parse call, no submodule updates
+        assert mock_run.call_count == 1
 
     def test_init_submodules_with_no_gitmodules(self, tmp_path):
         """Should return 0 when .gitmodules doesn't exist."""
@@ -1015,24 +1261,73 @@ class TestInitSubmodules:
 
         assert count == 0
 
-    def test_init_submodules_fails_on_unreadable_gitmodules(self, tmp_path):
-        """Should raise GitOperationError when .gitmodules is unreadable."""
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_init_submodules_fails_on_unparseable_gitmodules(self, mock_run, tmp_path):
+        """Should raise GitOperationError when git config -f fails."""
+        mock_run.side_effect = subprocess.CalledProcessError(
+            128, "git config", stderr="fatal: bad config"
+        )
+
         worktree_path = tmp_path / "repo-branch"
         worktree_path.mkdir()
-
-        # Create .gitmodules but make it unreadable
         gitmodules_path = worktree_path / ".gitmodules"
-        gitmodules_path.write_bytes(b"\xff\xfe")  # Invalid UTF-8
+        gitmodules_path.write_text("")
 
-        with pytest.raises(GitOperationError, match="Failed to read .gitmodules"):
+        with pytest.raises(GitOperationError, match="Failed to parse .gitmodules"):
             init_submodules(worktree_path)
+
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_init_submodules_empty_config_returns_zero(self, mock_run, tmp_path):
+        """Should return 0 when git config -f finds no path entries."""
+        # Exit code 1 = no matches
+        mock_run.side_effect = subprocess.CalledProcessError(1, "git config")
+
+        worktree_path = tmp_path / "repo-branch"
+        worktree_path.mkdir()
+        gitmodules_path = worktree_path / ".gitmodules"
+        gitmodules_path.write_text("")
+
+        count = init_submodules(worktree_path)
+        assert count == 0
+
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_init_submodules_without_remote(self, mock_run, tmp_path):
+        """Should not include --remote when remote=False."""
+        config_result = MagicMock(returncode=0, stdout="submodule.sub1.path sub1\n")
+        update_result = MagicMock(returncode=0)
+        mock_run.side_effect = [config_result, update_result]
+
+        worktree_path = tmp_path / "repo-branch"
+        worktree_path.mkdir()
+        gitmodules = worktree_path / ".gitmodules"
+        gitmodules.write_text("")
+
+        count = init_submodules(worktree_path, remote=False)
+
+        assert count == 1
+        mock_run.assert_any_call(
+            [
+                "git",
+                "-C",
+                str(worktree_path),
+                "submodule",
+                "update",
+                "--init",
+                "--recursive",
+                "sub1",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
 
 
 class TestFetchRepo:
     """Tests for fetch_repo function and refspec migration."""
 
+    @patch("repo_cli.git_ops._cleanup_stale_local_branches")
     @patch("repo_cli.git_ops.subprocess.run")
-    def test_fetch_repo_success(self, mock_run):
+    def test_fetch_repo_success(self, mock_run, mock_cleanup):
         """Should fetch and ensure refspec is configured."""
         # First call: check refspec (returns correct value)
         # Second call: fetch
@@ -1045,6 +1340,7 @@ class TestFetchRepo:
         fetch_repo(repo_path)
 
         assert mock_run.call_count == 2
+        mock_cleanup.assert_called_once_with(repo_path)
         # First call checks refspec
         mock_run.assert_any_call(
             ["git", "-C", str(repo_path), "config", "--get", "remote.origin.fetch"],
@@ -1060,8 +1356,9 @@ class TestFetchRepo:
             text=True,
         )
 
+    @patch("repo_cli.git_ops._cleanup_stale_local_branches")
     @patch("repo_cli.git_ops.subprocess.run")
-    def test_fetch_repo_migrates_missing_refspec(self, mock_run):
+    def test_fetch_repo_migrates_missing_refspec(self, mock_run, mock_cleanup):
         """Should configure refspec if missing (pre-v0.1.2 repos)."""
         # First call: check refspec (empty/missing)
         # Second call: set refspec
@@ -1102,8 +1399,9 @@ class TestFetchRepo:
         with pytest.raises(GitOperationError, match="Failed to fetch repository"):
             fetch_repo(Path("/tmp/test/repo.git"))
 
+    @patch("repo_cli.git_ops._cleanup_stale_local_branches")
     @patch("repo_cli.git_ops.subprocess.run")
-    def test_fetch_repo_migration_fails_but_fetch_proceeds(self, mock_run):
+    def test_fetch_repo_migration_fails_but_fetch_proceeds(self, mock_run, mock_cleanup):
         """Should still fetch even if migration config set fails."""
         # First call: check refspec (empty)
         # Second call: set refspec FAILS

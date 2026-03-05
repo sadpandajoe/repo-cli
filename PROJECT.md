@@ -35,302 +35,93 @@ A lightweight CLI tool for managing git worktrees with PR tracking. Simplifies t
 
 ### v0.1.3 Scope
 
-Three fixes before v0.2.0 breaking change:
+Fixes before v0.2.0 breaking change:
 
-1. **Atomic config writes** (CRITICAL - data corruption risk)
-   - Current: `save_config` writes directly to YAML file
-   - Risk: Process crash mid-write → corrupt/empty config → CLI unusable
-   - Fix: temp file + fsync + os.replace
+1. **Atomic config writes** (DONE - commit 658c3e1)
+   - Dir fsync after os.replace for full crash durability
 
-2. **Submodule deletion failure**
-   - Error: "fatal: working trees containing submodules cannot be moved or removed"
-   - Fix: Reactive deinit fallback (detect error → deinit → retry with --force)
+2. **Submodule deletion failure** (DONE - commit 658c3e1)
+   - Reactive deinit fallback: detect error → deinit --all --force → retry remove --force
+   - Console parameter for user feedback (dependency injection)
 
-3. **Stale worktrees on create** (NEW)
-   - Symptom: `repo create superset-shell master` produces worktree with master way behind origin, submodules on old commits
-   - Root cause: local `master` branch in bare repo never fast-forwarded after fetch
-   - Fix: Fast-forward local tracking branches after fetch, before worktree creation
+3. **Stale worktrees on create** (DONE - commit 9789283)
+   - `_try_fast_forward_branch()` helper with 3-step safety (show-ref → merge-base → update-ref)
 
----
+4. **Submodule init uses --remote** (DONE - commit 2cea31e)
+   - Submodules now fetch latest from tracking branch instead of pinned commit
 
-## v0.1.3 Implementation Plans
+5. **Four bugs from code review** (DONE - commit 658c3e1)
+   - Default-branch parsing with slashes (`release/2026` no longer truncated)
+   - Race condition in `create_worktree` now raises instead of returning None
+   - GitHub host detection: exact `github.com` match (no longer matches `notgithub.com`)
+   - Dir fsync after `os.replace` for full crash durability
 
-### 3. Fast-forward local tracking branches on create (NEW)
+6. **Upstream tracking for worktrees** (DONE - uncommitted)
+   - `_set_upstream_tracking()` sets `branch.<name>.remote/merge` after worktree creation
+   - `git pull` now works without manual `--set-upstream-to`
 
-**Problem**: When `repo create superset-shell master` is run, the worktree gets a stale `master` that's far behind `origin/master`. Submodules are also old because they're pinned to commits in the stale parent.
+7. **Stale local branches from bare clone** (DONE - uncommitted)
+   - `_cleanup_stale_local_branches()` removes `refs/heads/*` duplicating `refs/remotes/origin/*`
+   - Runs after every fetch; protects HEAD, worktree branches, diverged branches
+   - `git branch` now shows only relevant branches instead of every remote branch
 
-**Root Cause Analysis**:
+8. **Robust .gitmodules parsing** (DONE - uncommitted)
+   - Replaced fragile line-based `path =` matching with `git config -f --get-regexp`
+   - Handles all valid git config formatting (no spaces, tabs, etc.)
 
-When the bare repo already exists, the `create` command calls `fetch_repo()` (line 314, main.py) which updates `refs/remotes/origin/*`. But `create_worktree()` (git_ops.py, `has_local` path at lines 287-303) checks for a local branch first:
+9. **Configurable --remote for submodules** (DONE - uncommitted)
+   - `init_submodules()` now accepts `remote: bool = True` parameter
+   - Callers can opt out with `remote=False` for reproducible/pinned builds
 
-```python
-if has_local:
-    # Local branch exists - use it directly to preserve any unpushed commits
-    subprocess.run(["git", "worktree", "add", worktree_path, branch], ...)
-    return branch, False
-```
-
-This was designed to preserve unpushed commits on feature branches, but it causes `master`/`main` to be stale because those branches are never fast-forwarded. The fetch updated `origin/master` but the local `refs/heads/master` stays wherever it was.
-
-**How claudette-cli solves it**: Uses a regular (non-bare) clone and runs `git pull origin master --ff-only` before creating worktrees. This ensures the base is always current.
-
-**Accepted Solution**: Fast-forward local branches in `create_worktree()` when safe
-
-The fix goes in `create_worktree()` in the `has_local` path (git_ops.py, lines 287-303, inside the outer `try` block at the same indentation level). Before checking out the local branch, attempt to fast-forward it to `origin/<branch>` if:
-1. A remote-tracking branch `origin/<branch>` exists
-2. The local branch is an ancestor of the remote (i.e., fast-forward is possible)
-
-**Note on "checked out elsewhere"**: We do NOT need to guard against the branch being checked out in another worktree. `git worktree add` on line 296 will fail with "already checked out" if the branch is in use — git enforces this constraint for us. The fast-forward via `update-ref` before `worktree add` is safe even if the branch IS checked out elsewhere because: (a) `worktree add` will fail anyway, and (b) `update-ref` on a checked-out branch in a bare repo context only updates the ref, which is the correct behavior (the other worktree's HEAD symlink still points at the same ref name).
-
-If fast-forward isn't possible (diverged commits), leave the local branch as-is — this preserves the existing safety behavior for feature branches with unpushed work.
-
-**Implementation** — new helper function + updated `has_local` block (git_ops.py):
-
-```python
-def _try_fast_forward_branch(repo_path: Path, branch: str) -> None:
-    """Attempt to fast-forward a local branch to match its remote-tracking branch.
-
-    Safe: only updates when local is strictly behind remote (ancestor check).
-    Effectively no-op when: no remote branch exists, branches have diverged,
-    or local is already up-to-date (update-ref writes same SHA).
-
-    Args:
-        repo_path: Path to the bare repository
-        branch: Name of the local branch to fast-forward
-    """
-    # Step 1: Check if remote-tracking branch exists
-    try:
-        subprocess.run(
-            ["git", "-C", str(repo_path), "show-ref", "--verify",
-             f"refs/remotes/origin/{branch}"],
-            check=True, capture_output=True, text=True,
-        )
-    except subprocess.CalledProcessError:
-        return  # No remote branch — nothing to fast-forward to
-
-    # Step 2: Check if fast-forward is possible (local is ancestor of remote)
-    # merge-base --is-ancestor returns: 0 = ancestor (or equal), 1 = not ancestor, 128 = error
-    # Any non-zero means we should skip fast-forward (diverged or error)
-    result = subprocess.run(
-        ["git", "-C", str(repo_path), "merge-base", "--is-ancestor",
-         f"refs/heads/{branch}", f"refs/remotes/origin/{branch}"],
-        capture_output=True, text=True,
-    )
-    if result.returncode != 0:
-        return  # Diverged — preserve local commits
-
-    # Step 3: Fast-forward local ref to match remote
-    # update-ref with a ref name as new-value: git resolves it to SHA at call time
-    try:
-        subprocess.run(
-            ["git", "-C", str(repo_path), "update-ref",
-             f"refs/heads/{branch}", f"refs/remotes/origin/{branch}"],
-            check=True, capture_output=True, text=True,
-        )
-    except subprocess.CalledProcessError:
-        pass  # update-ref failed (disk full, permissions, etc.) — proceed with stale branch
-```
-
-Then in `create_worktree()`, the `has_local` block becomes:
-
-```python
-if has_local:
-    # Fast-forward local branch to match remote if possible
-    _try_fast_forward_branch(repo_path, branch)
-
-    # Create worktree from (now possibly updated) local branch
-    subprocess.run(
-        ["git", "-C", str(repo_path), "worktree", "add",
-         str(worktree_path), branch],
-        check=True, capture_output=True, text=True,
-    )
-    return branch, False
-```
-
-**Why this approach**:
-- **Safe**: `merge-base --is-ancestor` ensures we only update when local is strictly behind remote — no diverged commits are lost
-- **Correct for bare repos**: `update-ref` works on bare repos (no working tree to update)
-- **No new flags**: Always does the right thing — no `--pull` or `--fresh` opt-in needed
-- **Submodule issue resolves itself**: If master is current, submodule pins are current too, so `init_submodules` checks out the right commits
-- **Separated error handling**: `show-ref` failure (expected: no remote) is distinct from `update-ref` failure (unexpected: disk/permissions). Only `update-ref` failures are silently swallowed; `show-ref` returns early explicitly
-- **Extracted helper**: `_try_fast_forward_branch` is independently testable, keeps `create_worktree` clean
-
-**Why NOT other approaches**:
-- **Option: Always use `-B` with remote**: Destructive — overwrites local-only commits on feature branches
-- **Option: `--fresh` flag**: Adds complexity, user has to remember to use it, default behavior is still broken
-- **Option: Only fast-forward default branch**: Too narrow — same issue affects any tracking branch (e.g., `develop`, `release/*`)
-
-**Tests needed** (test_git_ops.py):
-
-New tests for `_try_fast_forward_branch`:
-1. Remote exists, local behind → `update-ref` called (fast-forward)
-2. Remote exists, local diverged → `update-ref` NOT called
-3. No remote-tracking branch → early return, no `merge-base` call
-4. `update-ref` fails → exception swallowed, no re-raise
-5. Local already up-to-date → `update-ref` called (harmless no-op)
-
-Updated existing tests for `create_worktree` — patch `_try_fast_forward_branch` directly:
-6. `test_create_worktree_existing_local_only_branch` — add `@patch("repo_cli.git_ops._try_fast_forward_branch")` to avoid coupling to helper internals. Keep existing `mock_run` side_effects (2 calls: show-ref local + worktree add). Assert helper was called with `(repo_path, branch)`.
-7. `test_create_worktree_both_local_and_remote_uses_local` — same approach: patch helper, keep existing 2-call mock sequence, assert helper called.
-
-**Placement**: `_try_fast_forward_branch` goes immediately before `create_worktree` (following the pattern of `_ensure_fetch_refspec` before `fetch_repo`).
-
-**Files**: `git_ops.py`, `test_git_ops.py`
+10. **Non-interactive TTY guards** (DONE - uncommitted)
+    - `_confirm_or_fail()` helper: auto-accept with `--yes`, prompt on TTY, fail-fast on non-TTY
+    - `--yes`/`-y` flag added to `register`, `create`, `delete`, `upgrade` commands
+    - All 6 `typer.confirm()` call sites replaced with TTY-safe helper
+    - 8 new tests for non-interactive paths (204 total tests)
 
 ---
 
-### 1. Atomic config writes (CRITICAL)
+## v0.1.3 Implementation Details
 
-**Problem**: Direct write to YAML means any crash/power loss during save → corrupt config → CLI broken
+### Completed
 
-**Implementation** (config.py):
-```python
-import os
-import tempfile
+**Fast-forward local tracking branches** (commit 9789283)
+- `_try_fast_forward_branch()` helper in git_ops.py with 3-step safety: show-ref → merge-base --is-ancestor → update-ref
+- Called in `create_worktree()` `has_local` path before `worktree add`
+- Diverged branches preserved as-is; no "checked out elsewhere" guard needed (git enforces)
 
-def save_config(config: dict[str, Any]) -> None:
-    """Save config with atomic write to prevent corruption."""
-    config_path = get_config_path()
-    config_path.parent.mkdir(parents=True, exist_ok=True)
+**Submodule init with --remote** (commit 2cea31e)
+- `init_submodules()` now uses `--remote` flag to fetch latest from tracking branch
+- Made configurable via `remote: bool = True` parameter (default preserves existing behavior)
 
-    # Write to temp file in same directory (ensures same filesystem)
-    fd, temp_path = tempfile.mkstemp(
-        dir=config_path.parent,
-        prefix=".config.",
-        suffix=".yaml.tmp",
-        text=True
-    )
+**Robust .gitmodules parsing** (uncommitted)
+- Replaced manual `path =` line matching with `git config -f .gitmodules --get-regexp`
+- Handles all valid git config formatting variants (no spaces, tabs, mixed indentation)
+- Error handling: exit code 1 (no matches) → return 0, other errors → `GitOperationError`
 
-    try:
-        with os.fdopen(fd, "w") as f:
-            yaml.safe_dump(config, f, default_flow_style=False, sort_keys=False)
-            f.flush()
-            os.fsync(f.fileno())  # Force write to disk
+**Non-interactive TTY guards** (uncommitted)
+- `_is_interactive()` + `_confirm_or_fail(message, yes)` helpers in main.py
+- `--yes`/`-y` flag added to `register`, `create`, `delete`, `upgrade` commands
+- Logic: `--yes` → auto-accept, TTY → prompt, non-TTY → fail-fast with guidance
+- All 6 `typer.confirm()` calls replaced; existing `--force` flags unchanged
 
-        # Atomic replace (POSIX guarantees atomicity)
-        os.replace(temp_path, config_path)
-    except Exception:
-        Path(temp_path).unlink(missing_ok=True)
-        raise
-```
+**Code review fixes** (commit 658c3e1)
+- Default-branch slash parsing: `"/".join(parts[3:])` instead of `parts[-1]`
+- Race condition guard: explicit `GitOperationError` when branch exists but neither ref resolves
+- GitHub host detection: `host == "github.com"` instead of `"github" in host`
+- Dir fsync after `os.replace()` in `save_config()`
 
-**Tests needed** (test_config.py):
-- Test successful atomic write
-- Test cleanup on write error
-- Test fsync called
+**Upstream tracking** (uncommitted)
+- `_set_upstream_tracking()` helper sets `branch.<name>.remote` and `branch.<name>.merge`
+- Called in `create_worktree()` for both `has_local` and `has_remote` paths
+- Skips when no remote-tracking branch exists (local-only branches)
 
-**Files**: `config.py`, `test_config.py`
-
----
-
-### 2. Fix submodule removal error
-
-**Approach**: Reactive with deinit fallback (simplified based on user insight)
-
-**User insight**: "If we're deleting the worktree, just make git succeed" - no need for caching/proactive checks
-
-**Implementation** (git_ops.py:246-265):
-```python
-from typing import Optional, Any
-
-def remove_worktree(
-    repo_path: Path,
-    worktree_path: Path,
-    console: Optional[Any] = None  # Rich Console or None (dependency injection)
-) -> None:
-    """Remove worktree, handling submodules if present.
-
-    Strategy:
-    1. Try normal removal first (fast path)
-    2. On submodule error, deinit and retry with --force
-    3. Provide clear feedback at each step (if console provided)
-
-    Args:
-        repo_path: Path to the bare repository
-        worktree_path: Path to the worktree to remove
-        console: Optional Rich console for user feedback (for interactive mode)
-
-    Raises:
-        GitOperationError: If removal fails
-
-    Note:
-        Uses dependency injection to avoid circular import (git_ops → main).
-        Console parameter is optional - works in both interactive and programmatic contexts.
-    """
-    try:
-        # Try normal removal first
-        subprocess.run(
-            ["git", "-C", str(repo_path), "worktree", "remove", str(worktree_path)],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-    except subprocess.CalledProcessError as e:
-        # Check if error is submodule-related
-        if "submodule" in e.stderr.lower():
-            # Provide feedback only if console is available
-            if console:
-                console.print("⚠️  Worktree contains submodules, deinitializing...", style="yellow")
-
-            try:
-                # Deinitialize submodules
-                # --force: Remove even if working tree has local modifications
-                # --all: Apply to all submodules
-                subprocess.run(
-                    ["git", "-C", str(worktree_path), "submodule", "deinit", "--all", "--force"],
-                    capture_output=True,
-                    text=True,
-                    check=True,
-                )
-
-                # Retry removal with --force
-                # --force: Remove even if worktree is dirty (after deinit, git may still think it's modified)
-                subprocess.run(
-                    ["git", "-C", str(repo_path), "worktree", "remove", "--force", str(worktree_path)],
-                    capture_output=True,
-                    text=True,
-                    check=True,
-                )
-
-                if console:
-                    console.print("✓ Submodules deinitialized", style="green")
-
-            except subprocess.CalledProcessError as submodule_error:
-                # Provide context-specific error message
-                raise GitOperationError(
-                    f"Failed to remove worktree with submodules: {submodule_error.stderr}"
-                ) from submodule_error
-        else:
-            # Re-raise with better error message
-            raise GitOperationError(f"Failed to remove worktree: {e.stderr}") from e
-
-
-# In main.py delete command, call with console parameter:
-git_ops.remove_worktree(bare_repo_path, worktree_path, console=console)
-```
-
-**Why reactive approach:**
-- Only pays cost when actually needed (most worktrees don't have submodules)
-- Simpler than caching or proactive `.gitmodules` checks
-- User doesn't care about performance when deleting
-- No state management complexity
-
-**Error scenarios handled:**
-1. Normal removal works → Fast path, no output
-2. Submodule blocks removal → User sees warning, then success message
-3. Deinit succeeds but force removal fails → Clear error with context
-4. Non-submodule error → Raised immediately with git's error message
-
-**Why --force flags:**
-- `submodule deinit --force`: Removes submodule even with uncommitted changes (user is deleting worktree anyway, local changes don't matter)
-- `worktree remove --force`: Removes even if git detects "dirty" state (after deinit, git may still think worktree is modified)
-
-**Tests needed** (test_git_ops.py):
-- Test normal removal (no submodules)
-- Test submodule fallback path
-- Test non-submodule errors propagate
-
-**Files**: `git_ops.py`, `test_git_ops.py`
+**Stale branch cleanup** (uncommitted)
+- `_cleanup_stale_local_branches()` helper in git_ops.py
+- Compares `refs/heads/*` SHAs against `refs/remotes/origin/*` — deletes exact matches
+- Protects: HEAD, worktree-checked-out branches, diverged branches, local-only branches
+- Called from `fetch_repo()` after fetch (migration for existing repos + ongoing cleanup)
+- Efficient: 4 git commands total (O(n) regardless of branch count)
 
 ---
 
@@ -428,10 +219,14 @@ alias ra='cd $(repo activate "$@" --print)'
 
 ### v0.1.3 - Bug Fixes (Next)
 
-Three fixes:
-- ⏳ Atomic config writes - Prevent data corruption
-- ⏳ Submodule deletion fix - Handle worktrees with submodules
-- ⏳ Stale worktree fix - Fast-forward local branches on create
+- ✅ Stale worktree fix - Fast-forward local branches on create
+- ✅ Submodule init --remote - Fetch latest tracking branch (now configurable)
+- ✅ Slash branch names, race condition, GitHub host detection, dir fsync
+- ✅ Submodule deletion fix - Handle worktrees with submodules
+- ✅ Upstream tracking - `git pull` works in worktrees without manual setup
+- ✅ Stale branch cleanup - `git branch` only shows relevant branches
+- ✅ Robust .gitmodules parsing - `git config -f` instead of line matching
+- ✅ Non-interactive TTY guards - `--yes` flag, fail-fast on non-TTY
 
 ### v0.2.0 - Enhancements + Directory Structure Migration
 
@@ -672,7 +467,7 @@ python3.11 -m pip install --user -e .
 ```
 
 ### Testing
-- **135 tests** - All passing
+- **204 tests** - All passing
 - Unit tests for all modules
 - E2E workflow tests
 - Security/validation tests
