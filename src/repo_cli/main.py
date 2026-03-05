@@ -523,12 +523,15 @@ def delete(
         worktree_config = cfg["worktrees"][worktree_key]
         remote = worktree_config.get("remote", "origin")
 
-        # Remove worktree
-        try:
-            git_ops.remove_worktree(bare_repo_path, worktree_path, console=console)
-        except git_ops.GitOperationError as e:
-            console.print(f"✗ {e}", style="red")
-            sys.exit(1)
+        # Remove worktree (skip if directory doesn't exist on disk)
+        if worktree_path.exists():
+            try:
+                git_ops.remove_worktree(bare_repo_path, worktree_path, console=console)
+            except git_ops.GitOperationError as e:
+                console.print(f"✗ {e}", style="red")
+                sys.exit(1)
+        else:
+            console.print("⚠ Worktree directory not found, cleaning up config", style="yellow")
 
         # Remove from config
         del cfg["worktrees"][worktree_key]
