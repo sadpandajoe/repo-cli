@@ -6,6 +6,7 @@ Provides high-level interfaces for git commands:
 - Initialize submodules
 """
 
+import contextlib
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -121,6 +122,9 @@ def fetch_repo(repo_path: Path) -> None:
         stderr = e.stderr.strip() if e.stderr else "Unknown error"
         raise GitOperationError(f"Failed to fetch repository: {stderr}") from e
 
+    # Clean up stale local branches (migration for bare clones)
+    _cleanup_stale_local_branches(repo_path)
+
 
 def get_default_branch(repo_path: Path) -> str:
     """Get the default branch for the repository.
@@ -161,11 +165,12 @@ def get_default_branch(repo_path: Path) -> str:
                 )
                 resolved_ref = resolved.stdout.strip()
                 # Extract branch name from refs/remotes/origin/develop → develop
+                # Handle slashes in branch names: refs/remotes/origin/release/2026 → release/2026
                 if resolved_ref.startswith("refs/remotes/"):
-                    # Split by / and get the last component (branch name)
+                    # Strip refs/remotes/origin/ prefix (4 components)
                     parts = resolved_ref.split("/")
-                    if len(parts) >= 3:  # refs/remotes/origin/branch
-                        return parts[-1]
+                    if len(parts) >= 4:  # refs/remotes/origin/branch[/...]
+                        return "/".join(parts[3:])
             except subprocess.CalledProcessError:
                 # Resolution failed, fall through to fallback
                 pass
@@ -242,6 +247,203 @@ def branch_exists(repo_path: Path, branch: str) -> bool:
     return False
 
 
+def _set_upstream_tracking(repo_path: Path, branch: str) -> None:
+    """Configure upstream tracking so `git pull` works in worktrees.
+
+    Sets branch.<name>.remote and branch.<name>.merge in the bare repo config.
+    Only sets tracking if a remote-tracking branch exists (origin/<branch>).
+
+    Args:
+        repo_path: Path to the bare repository
+        branch: Name of the local branch to configure
+    """
+    # Check if remote-tracking branch exists
+    try:
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo_path),
+                "show-ref",
+                "--verify",
+                f"refs/remotes/origin/{branch}",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError:
+        return  # No remote branch to track
+
+    # Set upstream tracking config
+    with contextlib.suppress(subprocess.CalledProcessError):
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo_path),
+                "config",
+                f"branch.{branch}.remote",
+                "origin",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo_path),
+                "config",
+                f"branch.{branch}.merge",
+                f"refs/heads/{branch}",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+
+def _cleanup_stale_local_branches(repo_path: Path) -> None:
+    """Remove local branches not needed in a bare repo.
+
+    In a repo-cli bare repo, the only local branches that should exist are:
+    - HEAD branch (the default branch)
+    - Branches checked out in worktrees
+
+    Everything else under refs/heads/* is a stale artifact from bare clone
+    and should be deleted. Remote-tracking refs (refs/remotes/origin/*) are
+    the authoritative source for branch state.
+    """
+    # Get HEAD ref to protect it
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_path), "symbolic-ref", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        head_ref = result.stdout.strip()
+    except subprocess.CalledProcessError:
+        return
+
+    # Get branches checked out in worktrees
+    checked_out: set[str] = set()
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_path), "worktree", "list", "--porcelain"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        for line in result.stdout.split("\n"):
+            if line.startswith("branch "):
+                checked_out.add(line.split(" ", 1)[1])
+    except subprocess.CalledProcessError:
+        return
+
+    # Get all local branch refs
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo_path),
+                "for-each-ref",
+                "--format=%(refname)",
+                "refs/heads/",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError:
+        return
+
+    # Delete any local branch that's not HEAD and not checked out in a worktree
+    for line in result.stdout.strip().split("\n"):
+        ref = line.strip()
+        if not ref:
+            continue
+        if ref == head_ref or ref in checked_out:
+            continue
+        with contextlib.suppress(subprocess.CalledProcessError):
+            subprocess.run(
+                ["git", "-C", str(repo_path), "update-ref", "-d", ref],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+
+def _try_fast_forward_branch(repo_path: Path, branch: str) -> None:
+    """Attempt to fast-forward a local branch to match its remote-tracking branch.
+
+    Safe: only updates when local is strictly behind remote (ancestor check).
+    Effectively no-op when: no remote branch exists, branches have diverged,
+    or local is already up-to-date (update-ref writes same SHA).
+
+    Args:
+        repo_path: Path to the bare repository
+        branch: Name of the local branch to fast-forward
+    """
+    # Step 1: Check if remote-tracking branch exists
+    try:
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo_path),
+                "show-ref",
+                "--verify",
+                f"refs/remotes/origin/{branch}",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError:
+        return  # No remote branch — nothing to fast-forward to
+
+    # Step 2: Check if fast-forward is possible (local is ancestor of remote)
+    # merge-base --is-ancestor returns: 0 = ancestor (or equal), 1 = not ancestor, 128 = error
+    # Any non-zero means we should skip fast-forward (diverged or error)
+    result = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo_path),
+            "merge-base",
+            "--is-ancestor",
+            f"refs/heads/{branch}",
+            f"refs/remotes/origin/{branch}",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return  # Not a clean fast-forward (diverged or git error) — preserve local branch
+
+    # Step 3: Fast-forward local ref to match remote
+    # update-ref with a ref name as new-value: git resolves it to SHA at call time
+    # Suppress failures (disk full, permissions, etc.) — proceed with stale branch
+    with contextlib.suppress(subprocess.CalledProcessError):
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo_path),
+                "update-ref",
+                f"refs/heads/{branch}",
+                f"refs/remotes/origin/{branch}",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+
 def create_worktree(
     repo_path: Path, worktree_path: Path, branch: str, start_point: str = "origin/HEAD"
 ) -> tuple[str, bool]:
@@ -285,7 +487,10 @@ def create_worktree(
                 pass
 
             if has_local:
-                # Local branch exists - use it directly to preserve any unpushed commits
+                # Fast-forward local branch to match remote if possible
+                _try_fast_forward_branch(repo_path, branch)
+
+                # Create worktree from (now possibly updated) local branch
                 subprocess.run(
                     [
                         "git",
@@ -300,6 +505,7 @@ def create_worktree(
                     capture_output=True,
                     text=True,
                 )
+                _set_upstream_tracking(repo_path, branch)
                 return branch, False
 
             # No local branch - check if remote-tracking branch exists
@@ -340,7 +546,14 @@ def create_worktree(
                     capture_output=True,
                     text=True,
                 )
+                _set_upstream_tracking(repo_path, branch)
                 return f"origin/{branch}", False
+            # Race condition: branch_exists() returned True but neither local nor remote
+            # ref could be verified (transient state). Raise rather than return None.
+            raise GitOperationError(
+                f"Branch '{branch}' was detected but could not be resolved. "
+                "This may be a transient state — try again."
+            )
         else:
             # Create new branch
             # Resolve origin/HEAD to actual default branch for bare repos
@@ -451,11 +664,13 @@ def remove_worktree(repo_path: Path, worktree_path: Path, console: Any = None) -
             raise GitOperationError(f"Failed to remove worktree: {stderr}") from e
 
 
-def init_submodules(worktree_path: Path) -> int:
+def init_submodules(worktree_path: Path, *, remote: bool = True) -> int:
     """Initialize submodules in a worktree, excluding .github submodules.
 
     Args:
         worktree_path: Path to the worktree
+        remote: If True, fetch latest from tracking branch instead of pinned
+            commit. Default True for convenience; set False for reproducible builds.
 
     Returns:
         Number of non-.github submodules initialized
@@ -468,21 +683,37 @@ def init_submodules(worktree_path: Path) -> int:
     if not gitmodules_path.exists():
         return 0
 
-    # Parse .gitmodules to find non-.github submodules
+    # Parse .gitmodules using git config (handles all valid formatting variants)
     try:
-        content = gitmodules_path.read_text()
-    except (OSError, PermissionError, UnicodeDecodeError) as e:
-        raise GitOperationError(
-            f"Failed to read .gitmodules file: {e}. "
-            "This may indicate a corrupt file, permission issue, or encoding problem."
-        ) from e
+        result = subprocess.run(
+            [
+                "git",
+                "config",
+                "-f",
+                str(gitmodules_path),
+                "--get-regexp",
+                r"submodule\..*\.path",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError as e:
+        if e.returncode == 1:
+            # No matches found (empty .gitmodules or no path entries)
+            return 0
+        stderr = e.stderr.strip() if e.stderr else "Unknown error"
+        raise GitOperationError(f"Failed to parse .gitmodules: {stderr}") from e
 
-    # Extract submodule paths (simple regex-free parsing)
+    # Output format: "submodule.name.path value\n" per line
     submodule_paths = []
-    for line in content.split("\n"):
-        line = line.strip()
-        if line.startswith("path ="):
-            path = line.split("=", 1)[1].strip()
+    for line in result.stdout.strip().split("\n"):
+        if not line:
+            continue
+        # Split "submodule.foo.path bar/baz" into key and value
+        parts = line.split(None, 1)  # Split on whitespace, max 2 parts
+        if len(parts) == 2:
+            path = parts[1]
             # Skip .github submodules (CI/CD actions, not needed for local dev)
             if not path.startswith(".github/"):
                 submodule_paths.append(path)
@@ -494,21 +725,19 @@ def init_submodules(worktree_path: Path) -> int:
     # Initialize each non-.github submodule individually
     try:
         for path in submodule_paths:
-            subprocess.run(
-                [
-                    "git",
-                    "-C",
-                    str(worktree_path),
-                    "submodule",
-                    "update",
-                    "--init",
-                    "--recursive",
-                    path,
-                ],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
+            cmd = [
+                "git",
+                "-C",
+                str(worktree_path),
+                "submodule",
+                "update",
+                "--init",
+                "--recursive",
+            ]
+            if remote:
+                cmd.append("--remote")
+            cmd.append(path)
+            subprocess.run(cmd, check=True, capture_output=True, text=True)
     except subprocess.CalledProcessError as e:
         stderr = e.stderr.strip() if e.stderr else "Unknown error"
         raise GitOperationError(f"Failed to initialize submodules: {stderr}") from e

@@ -166,7 +166,10 @@ class TestCliCreate:
         # Mock fetch_repo to raise GitOperationError
         from repo_cli.git_ops import GitOperationError
 
-        with patch("repo_cli.git_ops.fetch_repo") as mock_fetch:
+        with (
+            patch("repo_cli.git_ops.fetch_repo") as mock_fetch,
+            patch("repo_cli.main._is_interactive", return_value=True),
+        ):
             mock_fetch.side_effect = GitOperationError("Network timeout")
 
             # User responds "no" to prompt
@@ -199,6 +202,7 @@ class TestCliCreate:
             patch("repo_cli.git_ops.fetch_repo") as mock_fetch,
             patch("repo_cli.git_ops.create_worktree") as mock_create,
             patch("repo_cli.git_ops.init_submodules") as mock_submodules,
+            patch("repo_cli.main._is_interactive", return_value=True),
         ):
             mock_fetch.side_effect = GitOperationError("Network timeout")
             mock_create.return_value = ("origin/HEAD", True)
@@ -753,6 +757,7 @@ class TestCliUpgrade:
         with (
             patch("repo_cli.git_ops.has_uncommitted_changes") as mock_changes,
             patch("repo_cli.git_ops.get_current_branch") as mock_branch,
+            patch("repo_cli.main._is_interactive", return_value=True),
         ):
             mock_changes.return_value = True  # Has uncommitted changes
             mock_branch.return_value = "main"
@@ -781,6 +786,7 @@ class TestCliUpgrade:
         with (
             patch("repo_cli.git_ops.has_uncommitted_changes") as mock_changes,
             patch("repo_cli.git_ops.get_current_branch") as mock_branch,
+            patch("repo_cli.main._is_interactive", return_value=True),
         ):
             mock_changes.return_value = False
             mock_branch.return_value = "develop"  # Not main/master
@@ -826,6 +832,212 @@ class TestCliUpgrade:
             assert "Pulled latest changes" in result.stdout
             assert "Dependencies updated (uv sync)" in result.stdout
             assert "Upgrade complete!" in result.stdout
+
+
+class TestNonInteractiveConfirmation:
+    """Tests for non-interactive (non-TTY) confirmation behavior."""
+
+    def test_create_non_tty_fetch_failure_fails_fast(self, tmp_path, monkeypatch):
+        """Should fail fast when fetch fails in non-TTY without --yes."""
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        base_dir = tmp_path / "code"
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+
+        runner.invoke(app, ["init", "--base-dir", str(base_dir)])
+        runner.invoke(app, ["register", "test", "git@github.com:owner/repo.git"])
+
+        bare_repo = base_dir / "test.git"
+        bare_repo.mkdir(parents=True)
+
+        from repo_cli.git_ops import GitOperationError
+
+        with (
+            patch("repo_cli.git_ops.fetch_repo") as mock_fetch,
+            patch("repo_cli.main._is_interactive", return_value=False),
+        ):
+            mock_fetch.side_effect = GitOperationError("Network timeout")
+
+            result = runner.invoke(app, ["create", "test", "feature-123"])
+
+        assert result.exit_code == 1
+        assert "Confirmation required" in result.stdout
+
+    def test_create_with_yes_bypasses_fetch_failure_confirm(self, tmp_path, monkeypatch):
+        """Should auto-accept and continue with --yes when fetch fails."""
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        base_dir = tmp_path / "code"
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+
+        runner.invoke(app, ["init", "--base-dir", str(base_dir)])
+        runner.invoke(app, ["register", "test", "git@github.com:owner/repo.git"])
+
+        bare_repo = base_dir / "test.git"
+        bare_repo.mkdir(parents=True)
+
+        from repo_cli.git_ops import GitOperationError
+
+        with (
+            patch("repo_cli.git_ops.fetch_repo") as mock_fetch,
+            patch("repo_cli.git_ops.create_worktree") as mock_create,
+            patch("repo_cli.git_ops.init_submodules") as mock_submodules,
+        ):
+            mock_fetch.side_effect = GitOperationError("Network timeout")
+            mock_create.return_value = ("origin/HEAD", True)
+            mock_submodules.return_value = 0
+
+            result = runner.invoke(app, ["create", "test", "feature-123", "--yes"])
+
+        assert result.exit_code == 0
+        assert "Created worktree" in result.stdout
+
+    def test_delete_non_tty_without_force_or_yes_fails_fast(self, tmp_path, monkeypatch):
+        """Should fail fast when deleting in non-TTY without --force or --yes."""
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        base_dir = tmp_path / "code"
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+
+        runner.invoke(app, ["init", "--base-dir", str(base_dir)])
+        runner.invoke(app, ["register", "test", "git@github.com:owner/repo.git"])
+
+        # Add worktree to config manually
+        cfg = config.load_config()
+        cfg["worktrees"] = {
+            "test::feature": {
+                "repo": "test",
+                "branch": "feature",
+                "path": str(base_dir / "test-feature"),
+            }
+        }
+        config.save_config(cfg)
+
+        with patch("repo_cli.main._is_interactive", return_value=False):
+            result = runner.invoke(app, ["delete", "test", "feature"])
+
+        assert result.exit_code == 1
+        assert "Confirmation required" in result.stdout
+
+    def test_delete_with_yes_skips_confirm(self, tmp_path, monkeypatch):
+        """Should skip confirmation with --yes flag."""
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        base_dir = tmp_path / "code"
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+
+        runner.invoke(app, ["init", "--base-dir", str(base_dir)])
+        runner.invoke(app, ["register", "test", "git@github.com:owner/repo.git"])
+
+        # Add worktree to config manually
+        cfg = config.load_config()
+        cfg["worktrees"] = {
+            "test::feature": {
+                "repo": "test",
+                "branch": "feature",
+                "path": str(base_dir / "test-feature"),
+            }
+        }
+        config.save_config(cfg)
+
+        with patch("repo_cli.git_ops.remove_worktree"):
+            result = runner.invoke(app, ["delete", "test", "feature", "--yes"])
+
+        assert result.exit_code == 0
+        assert "Removed worktree" in result.stdout
+
+    def test_register_non_tty_url_mismatch_fails_fast(self, tmp_path, monkeypatch):
+        """Should fail fast on URL mismatch in non-TTY without --yes."""
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        base_dir = tmp_path / "code"
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+
+        runner.invoke(app, ["init", "--base-dir", str(base_dir)])
+
+        # Create bare repo with a different URL
+        bare_repo = base_dir / "test.git"
+        bare_repo.mkdir(parents=True)
+
+        with (
+            patch("repo_cli.git_ops.get_remote_url", return_value="git@github.com:owner/old.git"),
+            patch("repo_cli.main._is_interactive", return_value=False),
+        ):
+            result = runner.invoke(app, ["register", "test", "git@github.com:owner/new.git"])
+
+        assert result.exit_code == 1
+        assert "Confirmation required" in result.stdout
+
+    def test_register_with_yes_auto_updates_url(self, tmp_path, monkeypatch):
+        """Should auto-accept URL update when --yes is provided."""
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        base_dir = tmp_path / "code"
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+
+        runner.invoke(app, ["init", "--base-dir", str(base_dir)])
+
+        # Create bare repo with a different URL
+        bare_repo = base_dir / "test.git"
+        bare_repo.mkdir(parents=True)
+
+        with (
+            patch("repo_cli.git_ops.get_remote_url", return_value="git@github.com:owner/old.git"),
+            patch("repo_cli.git_ops.set_remote_url"),
+        ):
+            result = runner.invoke(
+                app, ["register", "test", "git@github.com:owner/new.git", "--yes"]
+            )
+
+        assert result.exit_code == 0
+        assert "Updated bare repository remote URL" in result.stdout
+
+    def test_upgrade_non_tty_uncommitted_changes_fails_fast(self, tmp_path, monkeypatch):
+        """Should fail fast on uncommitted changes in non-TTY without --yes."""
+        import repo_cli
+
+        fake_install = tmp_path / "fake-install"
+        fake_git = fake_install / ".git"
+        fake_git.mkdir(parents=True)
+
+        fake_module = fake_install / "src" / "repo_cli" / "__init__.py"
+        fake_module.parent.mkdir(parents=True)
+        fake_module.touch()
+
+        monkeypatch.setattr(repo_cli, "__file__", str(fake_module))
+
+        with (
+            patch("repo_cli.git_ops.has_uncommitted_changes", return_value=True),
+            patch("repo_cli.git_ops.get_current_branch", return_value="main"),
+            patch("repo_cli.main._is_interactive", return_value=False),
+        ):
+            result = runner.invoke(app, ["upgrade"])
+
+        assert result.exit_code == 1
+        assert "Confirmation required" in result.stdout
+
+    def test_upgrade_with_yes_auto_accepts_warnings(self, tmp_path, monkeypatch):
+        """Should auto-accept warnings with --yes."""
+
+        import repo_cli
+
+        fake_install = tmp_path / "fake-install"
+        fake_git = fake_install / ".git"
+        fake_git.mkdir(parents=True)
+
+        fake_module = fake_install / "src" / "repo_cli" / "__init__.py"
+        fake_module.parent.mkdir(parents=True)
+        fake_module.touch()
+
+        monkeypatch.setattr(repo_cli, "__file__", str(fake_module))
+
+        with (
+            patch("repo_cli.git_ops.has_uncommitted_changes", return_value=True),
+            patch("repo_cli.git_ops.get_current_branch", return_value="develop"),
+            patch("repo_cli.git_ops.pull_latest"),
+            patch("subprocess.run") as mock_run,
+            patch("shutil.which", return_value="/usr/bin/uv"),
+        ):
+            mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0)
+
+            result = runner.invoke(app, ["upgrade", "--yes"])
+
+        assert result.exit_code == 0
+        assert "Upgrade complete!" in result.stdout
 
 
 class TestE2EWorkflow:

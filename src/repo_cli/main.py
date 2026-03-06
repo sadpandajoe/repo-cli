@@ -1,5 +1,6 @@
 """Main CLI entry point for repo-cli."""
 
+import contextlib
 import platform
 import subprocess
 import sys
@@ -19,6 +20,29 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 console = Console()
+
+
+def _is_interactive() -> bool:
+    """Check if stdin is an interactive terminal."""
+    return sys.stdin.isatty()
+
+
+def _confirm_or_fail(message: str, yes: bool) -> bool:
+    """Prompt for confirmation, auto-accept, or fail fast in non-interactive mode.
+
+    Returns True if confirmed, False if declined.
+    Exits with error if non-interactive and --yes not provided.
+    """
+    if yes:
+        return True
+    if _is_interactive():
+        return typer.confirm(message)
+    console.print(
+        f"✗ Error: Confirmation required: {message}\n"
+        "  Use --yes (or --force where applicable) to skip in non-interactive mode.",
+        style="red",
+    )
+    sys.exit(1)
 
 
 def version_callback(value: bool):
@@ -123,6 +147,7 @@ def register(
     alias: str,
     url: str,
     force: Annotated[bool, typer.Option("--force", help="Overwrite existing alias")] = False,
+    yes: Annotated[bool, typer.Option("--yes", "-y", help="Auto-accept confirmations")] = False,
 ):
     """Register a repository alias for easy reference."""
     try:
@@ -171,7 +196,7 @@ def register(
                         console.print(f"  Current: {current_url}", style="yellow")
                         console.print(f"  New:     {url}", style="yellow")
 
-                        if typer.confirm("Update bare repository remote URL?"):
+                        if _confirm_or_fail("Update bare repository remote URL?", yes):
                             git_ops.set_remote_url(bare_repo_path, url)
                             console.print("✓ Updated bare repository remote URL", style="green")
                         else:
@@ -198,7 +223,7 @@ def register(
                         console.print(f"  Current: {current_url}", style="yellow")
                         console.print(f"  New:     {url}", style="yellow")
 
-                        if typer.confirm("Update bare repository remote URL?"):
+                        if _confirm_or_fail("Update bare repository remote URL?", yes):
                             git_ops.set_remote_url(bare_repo_path, url)
                             console.print("✓ Updated bare repository remote URL", style="green")
                         else:
@@ -242,6 +267,7 @@ def create(
     url: Annotated[
         str | None, typer.Option("--url", help="Repository URL (for lazy registration)")
     ] = None,
+    yes: Annotated[bool, typer.Option("--yes", "-y", help="Auto-accept confirmations")] = False,
 ):
     """Create a new worktree for a branch."""
     try:
@@ -308,6 +334,10 @@ def create(
             except git_ops.GitOperationError as e:
                 console.print(f"✗ {e}", style="red")
                 sys.exit(1)
+
+            # Fetch to populate refs/remotes/origin/* and clean up stale local branches
+            with contextlib.suppress(git_ops.GitOperationError):
+                git_ops.fetch_repo(bare_repo_path)
         else:
             # Fetch latest refs so we can see new remote branches
             try:
@@ -323,7 +353,7 @@ def create(
                     style="yellow",
                 )
                 # Prompt user to continue with potentially stale refs
-                if not typer.confirm("Do you want to create the branch anyway?"):
+                if not _confirm_or_fail("Do you want to create the branch anyway?", yes):
                     console.print("Cancelled", style="yellow")
                     sys.exit(0)
 
@@ -452,6 +482,7 @@ def delete(
     repo: Annotated[str, typer.Argument(autocompletion=complete_repo)],
     branch: Annotated[str, typer.Argument(autocompletion=complete_branch)],
     force: Annotated[bool, typer.Option("--force", help="Skip confirmation")] = False,
+    yes: Annotated[bool, typer.Option("--yes", "-y", help="Auto-accept confirmations")] = False,
     delete_branch: Annotated[
         bool, typer.Option("--delete-branch", help="Also delete the local branch")
     ] = False,
@@ -479,12 +510,10 @@ def delete(
             console.print(f"✗ Error: Worktree '{repo}/{branch}' not found in config", style="red")
             sys.exit(1)
 
-        # Confirm deletion unless --force
-        if not force:
-            confirm = typer.confirm(f"⚠ Delete worktree '{repo}/{branch}'?")
-            if not confirm:
-                console.print("Cancelled", style="yellow")
-                return
+        # Confirm deletion unless --force or --yes
+        if not force and not _confirm_or_fail(f"Delete worktree '{repo}/{branch}'?", yes):
+            console.print("Cancelled", style="yellow")
+            return
 
         # Paths
         bare_repo_path = utils.get_bare_repo_path(base_dir, repo)
@@ -494,12 +523,15 @@ def delete(
         worktree_config = cfg["worktrees"][worktree_key]
         remote = worktree_config.get("remote", "origin")
 
-        # Remove worktree
-        try:
-            git_ops.remove_worktree(bare_repo_path, worktree_path, console=console)
-        except git_ops.GitOperationError as e:
-            console.print(f"✗ {e}", style="red")
-            sys.exit(1)
+        # Remove worktree (skip if directory doesn't exist on disk)
+        if worktree_path.exists():
+            try:
+                git_ops.remove_worktree(bare_repo_path, worktree_path, console=console)
+            except git_ops.GitOperationError as e:
+                console.print(f"✗ {e}", style="red")
+                sys.exit(1)
+        else:
+            console.print("⚠ Worktree directory not found, cleaning up config", style="yellow")
 
         # Remove from config
         del cfg["worktrees"][worktree_key]
@@ -932,7 +964,10 @@ def upgrade_check():
 
 
 @app.command()
-def upgrade(force: Annotated[bool, typer.Option("--force", help="Skip safety checks")] = False):
+def upgrade(
+    force: Annotated[bool, typer.Option("--force", help="Skip safety checks")] = False,
+    yes: Annotated[bool, typer.Option("--yes", "-y", help="Auto-accept confirmations")] = False,
+):
     """Upgrade repo-cli to the latest version."""
     try:
         import shutil
@@ -970,7 +1005,7 @@ def upgrade(force: Annotated[bool, typer.Option("--force", help="Skip safety che
                         "⚠ Warning: You have uncommitted changes in the installation directory",
                         style="yellow",
                     )
-                    if not typer.confirm("Continue anyway?"):
+                    if not _confirm_or_fail("Continue anyway?", yes):
                         console.print("Cancelled", style="yellow")
                         sys.exit(0)
             except git_ops.GitOperationError as e:
@@ -985,7 +1020,7 @@ def upgrade(force: Annotated[bool, typer.Option("--force", help="Skip safety che
                         f"⚠ Warning: You are on branch '{current_branch}' (not main/master)",
                         style="yellow",
                     )
-                    if not typer.confirm("Continue anyway?"):
+                    if not _confirm_or_fail("Continue anyway?", yes):
                         console.print("Cancelled", style="yellow")
                         sys.exit(0)
             except git_ops.GitOperationError as e:
