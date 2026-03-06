@@ -481,7 +481,9 @@ def list(repo: Annotated[str | None, typer.Argument(autocompletion=complete_repo
 def delete(
     repo: Annotated[str, typer.Argument(autocompletion=complete_repo)],
     branch: Annotated[str, typer.Argument(autocompletion=complete_branch)],
-    force: Annotated[bool, typer.Option("--force", help="Skip confirmation")] = False,
+    force: Annotated[
+        bool, typer.Option("--force", help="Skip confirmation and force-remove dirty worktrees")
+    ] = False,
     yes: Annotated[bool, typer.Option("--yes", "-y", help="Auto-accept confirmations")] = False,
     delete_branch: Annotated[
         bool, typer.Option("--delete-branch", help="Also delete the local branch")
@@ -526,7 +528,7 @@ def delete(
         # Remove worktree (skip if directory doesn't exist on disk)
         if worktree_path.exists():
             try:
-                git_ops.remove_worktree(bare_repo_path, worktree_path, console=console)
+                git_ops.remove_worktree(bare_repo_path, worktree_path, console=console, force=force)
             except git_ops.GitOperationError as e:
                 console.print(f"✗ {e}", style="red")
                 sys.exit(1)

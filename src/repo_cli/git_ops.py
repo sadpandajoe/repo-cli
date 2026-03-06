@@ -584,11 +584,13 @@ def create_worktree(
         raise GitOperationError(f"Failed to create worktree: {stderr}") from e
 
 
-def remove_worktree(repo_path: Path, worktree_path: Path, console: Any = None) -> None:
+def remove_worktree(
+    repo_path: Path, worktree_path: Path, console: Any = None, *, force: bool = False
+) -> None:
     """Remove worktree, handling submodules if present.
 
     Strategy:
-    1. Try normal removal first (fast path)
+    1. Try normal removal first (fast path), or --force if requested
     2. On submodule error, deinit and retry with --force
     3. Provide clear feedback at each step (if console provided)
 
@@ -596,6 +598,7 @@ def remove_worktree(repo_path: Path, worktree_path: Path, console: Any = None) -
         repo_path: Path to the bare repository (for context)
         worktree_path: Path to the worktree to remove
         console: Optional Rich console for user feedback (for interactive mode)
+        force: If True, pass --force to git worktree remove (removes dirty worktrees)
 
     Raises:
         GitOperationError: If removal fails
@@ -605,13 +608,12 @@ def remove_worktree(repo_path: Path, worktree_path: Path, console: Any = None) -
         Console parameter is optional - works in both interactive and programmatic contexts.
     """
     try:
-        # Try normal removal first
-        subprocess.run(
-            ["git", "-C", str(repo_path), "worktree", "remove", str(worktree_path)],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
+        # Try removal (with --force if requested)
+        cmd = ["git", "-C", str(repo_path), "worktree", "remove"]
+        if force:
+            cmd.append("--force")
+        cmd.append(str(worktree_path))
+        subprocess.run(cmd, check=True, capture_output=True, text=True)
     except subprocess.CalledProcessError as e:
         # Check if error is submodule-related
         if e.stderr and "submodule" in e.stderr.lower():
