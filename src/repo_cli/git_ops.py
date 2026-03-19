@@ -306,15 +306,12 @@ def _set_upstream_tracking(repo_path: Path, branch: str) -> None:
 
 
 def _cleanup_stale_local_branches(repo_path: Path) -> None:
-    """Remove local branches not needed in a bare repo.
+    """Maintain local branch hygiene in bare repos.
 
-    In a repo-cli bare repo, the only local branches that should exist are:
-    - HEAD branch (the default branch)
-    - Branches checked out in worktrees
-
-    Everything else under refs/heads/* is a stale artifact from bare clone
-    and should be deleted. Remote-tracking refs (refs/remotes/origin/*) are
-    the authoritative source for branch state.
+    Fast-forwards the HEAD branch to match its remote, then removes stale
+    local refs. In a repo-cli bare repo, the only local branches that should
+    exist are the HEAD branch and branches checked out in worktrees.
+    Everything else under refs/heads/* is a stale artifact from bare clone.
     """
     # Get HEAD ref to protect it
     try:
@@ -327,6 +324,13 @@ def _cleanup_stale_local_branches(repo_path: Path) -> None:
         head_ref = result.stdout.strip()
     except subprocess.CalledProcessError:
         return
+
+    # Fast-forward HEAD branch to match remote — _try_fast_forward_branch is
+    # internally safe (no exceptions propagate), but wrap defensively so
+    # cleanup always proceeds even if something unexpected happens.
+    head_branch = head_ref.removeprefix("refs/heads/")
+    with contextlib.suppress(Exception):
+        _try_fast_forward_branch(repo_path, head_branch)
 
     # Get branches checked out in worktrees
     checked_out: set[str] = set()
@@ -559,8 +563,9 @@ def create_worktree(
             # Resolve origin/HEAD to actual default branch for bare repos
             resolved_start = start_point
             if start_point == "origin/HEAD":
-                # For bare repos, use the default branch directly
-                resolved_start = get_default_branch(repo_path)
+                # Resolve to remote ref so we get current state, not stale local
+                default_branch = get_default_branch(repo_path)
+                resolved_start = f"origin/{default_branch}"
 
             subprocess.run(
                 [
