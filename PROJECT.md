@@ -31,9 +31,70 @@ A lightweight CLI tool for managing git worktrees with PR tracking. Simplifies t
 
 ## Active Work
 
-**Current Focus**: v0.1.3 - Bug Fixes
+**Current Focus**: Fix stale default branch in bare repos
 
-### v0.1.3 Scope
+### v0.1.5 - Fix stale `refs/heads/master` causing new branches to inherit outdated state
+
+**Problem**: When `repo create` makes a new branch with the default start point (`origin/HEAD`), it resolves to the stale local `refs/heads/master` instead of `refs/remotes/origin/master`. This caused a CI failure where a new branch inherited an outdated submodule pointer (SHA `a7ea4212` from commit `642af988`) instead of the current one (`3edf7512` from `70e50719`).
+
+**Root Cause**: `git_ops.py:560-563` — `get_default_branch()` returns `"master"` which resolves to `refs/heads/master` (stale local), not `refs/remotes/origin/master` (current). Two mechanisms exist but don't help:
+1. `_cleanup_stale_local_branches()` protects HEAD branch — never deletes `refs/heads/master`
+2. `_try_fast_forward_branch()` only runs for the worktree branch, not the start point
+
+**Accepted Solution**: Two complementary fixes:
+
+1. **Fix `origin/HEAD` resolution** — resolve to `origin/{default_branch}` instead of `{default_branch}`:
+   ```python
+   # git_ops.py create_worktree() line 563
+   if start_point == "origin/HEAD":
+       default_branch = get_default_branch(repo_path)
+       resolved_start = f"origin/{default_branch}"  # was: resolved_start = default_branch
+   ```
+
+2. **Fast-forward default branch during cleanup** — keep `refs/heads/master` current:
+   ```python
+   # git_ops.py _cleanup_stale_local_branches() — insert at line 330 (blank line after try/except, before "# Get branches checked out in worktrees")
+   head_branch = head_ref.removeprefix("refs/heads/")
+   _try_fast_forward_branch(repo_path, head_branch)
+   ```
+   Update docstring to: "Maintain local branch hygiene in bare repos: fast-forward HEAD branch to match remote, then remove stale refs."
+
+**Why both**: Fix 1 addresses the semantic bug (intent of `origin/HEAD` is "latest remote"). Fix 2 prevents staleness for explicit `--from master` usage. Note: `_cleanup_stale_local_branches` runs from `fetch_repo()` after fetch, so `refs/remotes/origin/*` is already current when fast-forward executes.
+
+**Return value change**: `create_worktree()` returns `resolved_start` (line 581). After Fix 1, this changes from `"master"` to `"origin/master"` for the default start point case. This is **intentional and desirable**:
+- Display (main.py:375): `"Branch: feat (new, from origin/master)"` — more accurate than `"from master"`
+- Config metadata (main.py:403): `start_point: "origin/master"` — truthfully records the remote ref used
+- No other callers of `create_worktree()` exist beyond `main.py:create`
+
+**Files to modify**:
+- `src/repo_cli/git_ops.py` — `create_worktree()` line 563, `_cleanup_stale_local_branches()` line 328 + docstring
+- `tests/test_git_ops.py` — update existing tests, add 2+ new tests
+
+**Testing Strategy**:
+
+*Fix 1 tests (create_worktree):*
+- Update `test_create_worktree_new_branch_default_start_point`: assert `origin/master` in `worktree add` args AND assert return value is `("origin/master", True)`
+- Parameterize with `["master", "main", "develop"]` to verify fix is not hard-coded to one branch name
+- Verify `test_create_worktree_new_branch_custom_start_point` (existing, `start_point="v2.1.0"`) still passes unchanged as regression check
+
+*Fix 2 tests (cleanup fast-forward):*
+- **Mock strategy**: Patch `_try_fast_forward_branch` at function level in all `TestCleanupStaleLocalBranches` tests (not via subprocess side_effect). This avoids breaking the 7 existing tests' positional `side_effect` lists and `call_count` assertions. Fast-forward is already thoroughly tested in `TestTryFastForwardBranch`.
+- Add test: `_try_fast_forward_branch` called with HEAD branch name during cleanup
+- Add test: fast-forward skipped when default branch has no remote counterpart (mock raises, cleanup continues)
+
+*Existing test impact:*
+- All 7 `TestCleanupStaleLocalBranches` tests need `@patch("repo_cli.git_ops._try_fast_forward_branch")` as the **outermost** (topmost) decorator, so `mock_ff` is the **last** parameter (after `mock_run`). This preserves existing `mock_run` parameter position. No `side_effect` changes needed.
+  ```python
+  @patch("repo_cli.git_ops._try_fast_forward_branch")  # outermost = last param
+  @patch("repo_cli.git_ops.subprocess.run")
+  def test_example(self, mock_run, mock_ff):
+  ```
+
+**Status**: Planning → review round 2
+
+---
+
+### v0.1.3 Scope (completed)
 
 Fixes before v0.2.0 breaking change:
 

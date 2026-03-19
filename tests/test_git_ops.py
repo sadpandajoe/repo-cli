@@ -325,15 +325,16 @@ class TestBranchExists:
 class TestCreateWorktree:
     """Tests for create_worktree function."""
 
+    @pytest.mark.parametrize("default_branch", ["master", "main", "develop"])
     @patch("repo_cli.git_ops.get_default_branch")
     @patch("repo_cli.git_ops.branch_exists")
     @patch("repo_cli.git_ops.subprocess.run")
     def test_create_worktree_new_branch_default_start_point(
-        self, mock_run, mock_branch_exists, mock_get_default
+        self, mock_run, mock_branch_exists, mock_get_default, default_branch
     ):
-        """Should create new worktree with default branch when using origin/HEAD."""
+        """Should resolve origin/HEAD to origin/{default_branch} for bare repos."""
         mock_branch_exists.return_value = False
-        mock_get_default.return_value = "master"
+        mock_get_default.return_value = default_branch
         mock_run.return_value = MagicMock(returncode=0)
 
         repo_path = Path("/tmp/test/repo.git")
@@ -343,7 +344,7 @@ class TestCreateWorktree:
         actual_ref, is_new = create_worktree(repo_path, worktree_path, branch)
 
         assert is_new is True
-        assert actual_ref == "master"
+        assert actual_ref == f"origin/{default_branch}"
         mock_branch_exists.assert_called_once_with(repo_path, branch)
         mock_get_default.assert_called_once_with(repo_path)
         mock_run.assert_called_once_with(
@@ -356,7 +357,7 @@ class TestCreateWorktree:
                 str(worktree_path),
                 "-b",
                 branch,
-                "master",
+                f"origin/{default_branch}",
             ],
             check=True,
             capture_output=True,
@@ -802,8 +803,9 @@ class TestSetUpstreamTracking:
 class TestCleanupStaleLocalBranches:
     """Tests for _cleanup_stale_local_branches helper."""
 
+    @patch("repo_cli.git_ops._try_fast_forward_branch")
     @patch("repo_cli.git_ops.subprocess.run")
-    def test_removes_non_head_non_worktree_branches(self, mock_run):
+    def test_removes_non_head_non_worktree_branches(self, mock_run, mock_ff):
         """Should delete any local branch that's not HEAD and not in a worktree."""
         mock_run.side_effect = [
             # symbolic-ref HEAD
@@ -845,8 +847,9 @@ class TestCleanupStaleLocalBranches:
             "refs/heads/old-branch",
         ]
 
+    @patch("repo_cli.git_ops._try_fast_forward_branch")
     @patch("repo_cli.git_ops.subprocess.run")
-    def test_keeps_head_branch(self, mock_run):
+    def test_keeps_head_branch(self, mock_run, mock_ff):
         """Should never delete HEAD branch."""
         mock_run.side_effect = [
             MagicMock(returncode=0, stdout="refs/heads/master\n"),
@@ -861,8 +864,9 @@ class TestCleanupStaleLocalBranches:
 
         assert mock_run.call_count == 3
 
+    @patch("repo_cli.git_ops._try_fast_forward_branch")
     @patch("repo_cli.git_ops.subprocess.run")
-    def test_keeps_worktree_branches(self, mock_run):
+    def test_keeps_worktree_branches(self, mock_run, mock_ff):
         """Should not delete branches checked out in worktrees."""
         mock_run.side_effect = [
             MagicMock(returncode=0, stdout="refs/heads/master\n"),
@@ -887,8 +891,9 @@ class TestCleanupStaleLocalBranches:
 
         assert mock_run.call_count == 3
 
+    @patch("repo_cli.git_ops._try_fast_forward_branch")
     @patch("repo_cli.git_ops.subprocess.run")
-    def test_deletes_branches_with_no_remote(self, mock_run):
+    def test_deletes_branches_with_no_remote(self, mock_run, mock_ff):
         """Should delete local-only branches (no remote counterpart)."""
         mock_run.side_effect = [
             MagicMock(returncode=0, stdout="refs/heads/master\n"),
@@ -915,8 +920,9 @@ class TestCleanupStaleLocalBranches:
             "refs/heads/local-only",
         ]
 
+    @patch("repo_cli.git_ops._try_fast_forward_branch")
     @patch("repo_cli.git_ops.subprocess.run")
-    def test_deletes_branches_with_different_sha(self, mock_run):
+    def test_deletes_branches_with_different_sha(self, mock_run, mock_ff):
         """Should delete diverged branches (different SHA from remote)."""
         mock_run.side_effect = [
             MagicMock(returncode=0, stdout="refs/heads/master\n"),
@@ -943,8 +949,9 @@ class TestCleanupStaleLocalBranches:
             "refs/heads/diverged",
         ]
 
+    @patch("repo_cli.git_ops._try_fast_forward_branch")
     @patch("repo_cli.git_ops.subprocess.run")
-    def test_handles_empty_repo(self, mock_run):
+    def test_handles_empty_repo(self, mock_run, mock_ff):
         """Should handle repos with no branches gracefully."""
         mock_run.side_effect = [
             MagicMock(returncode=0, stdout="refs/heads/master\n"),
@@ -957,8 +964,9 @@ class TestCleanupStaleLocalBranches:
 
         assert mock_run.call_count == 3
 
+    @patch("repo_cli.git_ops._try_fast_forward_branch")
     @patch("repo_cli.git_ops.subprocess.run")
-    def test_returns_early_on_head_failure(self, mock_run):
+    def test_returns_early_on_head_failure(self, mock_run, mock_ff):
         """Should return early if symbolic-ref HEAD fails."""
         mock_run.side_effect = subprocess.CalledProcessError(1, "git")
 
@@ -966,6 +974,45 @@ class TestCleanupStaleLocalBranches:
         _cleanup_stale_local_branches(repo_path)
 
         assert mock_run.call_count == 1
+
+    @patch("repo_cli.git_ops._try_fast_forward_branch")
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_fast_forwards_head_branch(self, mock_run, mock_ff):
+        """Should fast-forward the HEAD branch to match remote during cleanup."""
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="refs/heads/master\n"),
+            MagicMock(returncode=0, stdout=""),
+            MagicMock(returncode=0, stdout="refs/heads/master\n"),
+        ]
+
+        repo_path = Path("/tmp/repo.git")
+        _cleanup_stale_local_branches(repo_path)
+
+        mock_ff.assert_called_once_with(repo_path, "master")
+
+    @patch("repo_cli.git_ops._try_fast_forward_branch")
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_cleanup_continues_when_fast_forward_raises(self, mock_run, mock_ff):
+        """Should continue cleanup even if fast-forward raises an exception."""
+        mock_ff.side_effect = Exception("unexpected error")
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="refs/heads/master\n"),
+            MagicMock(returncode=0, stdout=""),
+            MagicMock(
+                returncode=0,
+                stdout="refs/heads/master\nrefs/heads/stale\n",
+            ),
+            # update-ref -d refs/heads/stale
+            MagicMock(returncode=0),
+        ]
+
+        repo_path = Path("/tmp/repo.git")
+        _cleanup_stale_local_branches(repo_path)
+
+        # Fast-forward was attempted
+        mock_ff.assert_called_once_with(repo_path, "master")
+        # Cleanup still proceeded — stale branch was deleted
+        assert mock_run.call_count == 4
 
 
 class TestRemoveWorktree:
