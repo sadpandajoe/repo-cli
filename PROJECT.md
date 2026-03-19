@@ -3,8 +3,8 @@ A lightweight CLI tool for managing git worktrees with PR tracking. Simplifies t
 
 ## Current Status
 
-**v0.1.2 Released** - 2025-12-16
-- https://github.com/sadpandajoe/repo-cli/releases/tag/v0.1.2
+**v0.1.5 Released** - 2026-03-19
+- https://github.com/sadpandajoe/repo-cli/releases/tag/v0.1.5
 
 ### Previous Releases
 
@@ -90,7 +90,7 @@ A lightweight CLI tool for managing git worktrees with PR tracking. Simplifies t
   def test_example(self, mock_run, mock_ff):
   ```
 
-**Status**: Planning → review round 2
+**Status**: Released
 
 ---
 
@@ -528,7 +528,7 @@ python3.11 -m pip install --user -e .
 ```
 
 ### Testing
-- **204 tests** - All passing
+- **208 tests** - All passing
 - Unit tests for all modules
 - E2E workflow tests
 - Security/validation tests
