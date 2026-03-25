@@ -942,6 +942,69 @@ class TestNonInteractiveConfirmation:
         assert result.exit_code == 0
         assert "Removed worktree" in result.stdout
 
+    def test_delete_warns_when_cwd_inside_worktree(self, tmp_path, monkeypatch):
+        """Should warn user to cd out when shell CWD is inside the deleted worktree."""
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        base_dir = tmp_path / "code"
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+
+        runner.invoke(app, ["init", "--base-dir", str(base_dir)])
+        runner.invoke(app, ["register", "test", "git@github.com:owner/repo.git"])
+
+        # Add worktree to config manually
+        cfg = config.load_config()
+        cfg["worktrees"] = {
+            "test::feature": {
+                "repo": "test",
+                "branch": "feature",
+                "path": str(base_dir / "test-feature"),
+            }
+        }
+        config.save_config(cfg)
+
+        worktree_dir = base_dir / "test-feature"
+        worktree_dir.mkdir(parents=True, exist_ok=True)
+
+        with (
+            patch("repo_cli.git_ops.remove_worktree"),
+            patch("repo_cli.main.Path.cwd", return_value=worktree_dir),
+        ):
+            result = runner.invoke(app, ["delete", "test", "feature", "--yes"])
+
+        assert result.exit_code == 0
+        assert "Removed worktree" in result.stdout
+        assert "cd " in result.stdout
+        assert str(base_dir) in result.stdout
+
+    def test_delete_no_warning_when_cwd_outside_worktree(self, tmp_path, monkeypatch):
+        """Should not warn about CWD when shell is outside the deleted worktree."""
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        base_dir = tmp_path / "code"
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+
+        runner.invoke(app, ["init", "--base-dir", str(base_dir)])
+        runner.invoke(app, ["register", "test", "git@github.com:owner/repo.git"])
+
+        cfg = config.load_config()
+        cfg["worktrees"] = {
+            "test::feature": {
+                "repo": "test",
+                "branch": "feature",
+                "path": str(base_dir / "test-feature"),
+            }
+        }
+        config.save_config(cfg)
+
+        with (
+            patch("repo_cli.git_ops.remove_worktree"),
+            patch("repo_cli.main.Path.cwd", return_value=tmp_path),
+        ):
+            result = runner.invoke(app, ["delete", "test", "feature", "--yes"])
+
+        assert result.exit_code == 0
+        assert "Removed worktree" in result.stdout
+        assert "cd " not in result.stdout
+
     def test_register_non_tty_url_mismatch_fails_fast(self, tmp_path, monkeypatch):
         """Should fail fast on URL mismatch in non-TTY without --yes."""
         config_file = tmp_path / ".repo-cli" / "config.yaml"
