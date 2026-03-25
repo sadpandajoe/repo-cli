@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.6] - 2026-03-25
+
+### Fixed
+- **Delete CWD Warning** - `repo delete` now warns when the shell's working directory is inside the worktree being deleted, with a `cd` hint to avoid `getcwd` errors
+
+### Testing
+- **210 passing tests** (up from 208)
+
 ## [0.1.2] - 2025-12-16
 
 ### Fixed
@@ -125,6 +133,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Full upgrade workflow not covered by automated tests (requires manual testing)
 - Tested primarily on macOS (Git 2.40.0, gh 2.60.1)
 
+[0.1.6]: https://github.com/sadpandajoe/repo-cli/releases/tag/v0.1.6
 [0.1.2]: https://github.com/sadpandajoe/repo-cli/releases/tag/v0.1.2
 [0.1.1]: https://github.com/sadpandajoe/repo-cli/releases/tag/v0.1.1
 [0.1.0]: https://github.com/sadpandajoe/repo-cli/releases/tag/v0.1.0
