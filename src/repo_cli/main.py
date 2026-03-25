@@ -525,6 +525,13 @@ def delete(
         worktree_config = cfg["worktrees"][worktree_key]
         remote = worktree_config.get("remote", "origin")
 
+        # Check if shell CWD is inside the worktree being deleted
+        try:
+            cwd = Path.cwd()
+            cwd_inside_worktree = cwd == worktree_path or worktree_path in cwd.parents
+        except OSError:
+            cwd_inside_worktree = False
+
         # Remove worktree (skip if directory doesn't exist on disk)
         if worktree_path.exists():
             try:
@@ -540,6 +547,12 @@ def delete(
         config.save_config(cfg)
 
         console.print(f"✓ Removed worktree: {str(worktree_path)}", style="green")
+
+        if cwd_inside_worktree:
+            console.print(
+                f"⚠ Shell is still in the deleted directory. Run:  cd {base_dir}",
+                style="yellow",
+            )
 
         # Delete branches if requested
         if delete_remote or delete_branch:
