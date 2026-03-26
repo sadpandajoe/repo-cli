@@ -50,6 +50,32 @@ def get_pr_status(pr_number: int, owner_repo: str) -> str | None:
         return None
 
 
+def open_pr_in_browser(pr_number: int, owner_repo: str) -> bool:
+    """Open a PR in the web browser using gh CLI.
+
+    Args:
+        pr_number: Pull request number
+        owner_repo: Repository in owner/repo format
+
+    Returns:
+        True if browser was opened successfully, False otherwise
+    """
+    if not is_gh_available():
+        return False
+
+    try:
+        result = subprocess.run(
+            ["gh", "pr", "view", str(pr_number), "--repo", owner_repo, "--web"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return result.returncode == 0
+
+    except Exception:
+        return False
+
+
 def validate_pr_exists(pr_number: int, owner_repo: str) -> bool:
     """Validate that a PR exists.
 

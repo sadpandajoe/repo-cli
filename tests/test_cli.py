@@ -273,7 +273,7 @@ class TestCliPrLink:
 
     @patch("repo_cli.gh_ops.is_gh_available")
     def test_pr_link_success(self, mock_gh_available, tmp_path, monkeypatch):
-        """Should link PR to worktree."""
+        """Should link PR to worktree with explicit args."""
         mock_gh_available.return_value = False  # Avoid actual gh calls
         config_file = tmp_path / ".repo-cli" / "config.yaml"
         monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
@@ -302,8 +302,8 @@ class TestCliPrLink:
         with open(config_file, "w") as f:
             yaml.safe_dump(cfg, f)
 
-        # Link PR
-        result = runner.invoke(app, ["pr", "link", "test", "feature", "123"])
+        # Link PR — pr_number first, then repo and branch
+        result = runner.invoke(app, ["pr", "link", "123", "test", "feature"])
 
         assert result.exit_code == 0
         assert "Linked PR #123 to test/feature" in result.stdout
@@ -317,10 +317,279 @@ class TestCliPrLink:
         runner.invoke(app, ["init"])
 
         # Try to link PR to non-existent worktree
-        result = runner.invoke(app, ["pr", "link", "test", "feature", "123"])
+        result = runner.invoke(app, ["pr", "link", "123", "test", "feature"])
 
         assert result.exit_code == 1
         assert "not found" in result.stdout
+
+    @patch("repo_cli.gh_ops.is_gh_available")
+    def test_pr_link_auto_detect_from_cwd(self, mock_gh_available, tmp_path, monkeypatch):
+        """Should auto-detect repo/branch when CWD is inside a worktree."""
+        mock_gh_available.return_value = False
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+
+        runner.invoke(app, ["init"])
+        import yaml
+
+        with open(config_file) as f:
+            cfg = yaml.safe_load(f)
+
+        cfg["base_dir"] = str(tmp_path / "code")
+        cfg["repos"] = {
+            "myrepo": {"url": "git@github.com:owner/repo.git", "owner_repo": "owner/repo"}
+        }
+        cfg["worktrees"] = {
+            "myrepo::feature": {
+                "repo": "myrepo",
+                "branch": "feature",
+                "pr": None,
+                "start_point": "origin/main",
+            }
+        }
+
+        with open(config_file, "w") as f:
+            yaml.safe_dump(cfg, f)
+
+        # Create the worktree directory and cd into it
+        wt_dir = tmp_path / "code" / "myrepo" / "feature"
+        wt_dir.mkdir(parents=True)
+        monkeypatch.chdir(wt_dir)
+
+        # Just pr_number — should auto-detect repo/branch
+        result = runner.invoke(app, ["pr", "link", "99"])
+
+        assert result.exit_code == 0
+        assert "Linked PR #99 to myrepo/feature" in result.stdout
+
+    def test_pr_link_auto_detect_not_in_worktree(self, tmp_path, monkeypatch):
+        """Should error when CWD is not inside any known worktree."""
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+
+        runner.invoke(app, ["init"])
+        monkeypatch.chdir(tmp_path)
+
+        result = runner.invoke(app, ["pr", "link", "123"])
+
+        assert result.exit_code == 1
+        assert "Not inside a known worktree" in result.stdout
+
+
+class TestCliPrOpen:
+    """Integration tests for repo pr open command."""
+
+    @patch("repo_cli.main.webbrowser.open")
+    @patch("repo_cli.gh_ops.open_pr_in_browser")
+    def test_pr_open_via_gh(self, mock_open_browser, mock_wb_open, tmp_path, monkeypatch):
+        """Should open PR in browser via gh CLI."""
+        mock_open_browser.return_value = True
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+
+        # Initialize and set up config
+        runner.invoke(app, ["init"])
+        import yaml
+
+        with open(config_file) as f:
+            cfg = yaml.safe_load(f)
+
+        cfg["repos"] = {
+            "test": {"url": "git@github.com:owner/repo.git", "owner_repo": "owner/repo"}
+        }
+        cfg["worktrees"] = {
+            "test::feature": {
+                "repo": "test",
+                "branch": "feature",
+                "pr": 123,
+                "start_point": "origin/HEAD",
+            }
+        }
+
+        with open(config_file, "w") as f:
+            yaml.safe_dump(cfg, f)
+
+        result = runner.invoke(app, ["pr", "open", "test", "feature"])
+
+        assert result.exit_code == 0
+        assert "Opened PR #123" in result.stdout
+        mock_open_browser.assert_called_once_with(123, "owner/repo")
+        mock_wb_open.assert_not_called()
+
+    @patch("repo_cli.main.webbrowser.open")
+    @patch("repo_cli.gh_ops.open_pr_in_browser")
+    def test_pr_open_fallback_webbrowser(
+        self, mock_open_browser, mock_wb_open, tmp_path, monkeypatch
+    ):
+        """Should fall back to webbrowser when gh fails."""
+        mock_open_browser.return_value = False
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+
+        runner.invoke(app, ["init"])
+        import yaml
+
+        with open(config_file) as f:
+            cfg = yaml.safe_load(f)
+
+        cfg["repos"] = {
+            "test": {"url": "git@github.com:owner/repo.git", "owner_repo": "owner/repo"}
+        }
+        cfg["worktrees"] = {
+            "test::feature": {
+                "repo": "test",
+                "branch": "feature",
+                "pr": 456,
+                "start_point": "origin/HEAD",
+            }
+        }
+
+        with open(config_file, "w") as f:
+            yaml.safe_dump(cfg, f)
+
+        result = runner.invoke(app, ["pr", "open", "test", "feature"])
+
+        assert result.exit_code == 0
+        assert "Opened PR #456" in result.stdout
+        mock_wb_open.assert_called_once_with("https://github.com/owner/repo/pull/456")
+
+    @patch("repo_cli.gh_ops.open_pr_in_browser")
+    def test_pr_open_no_pr_linked(self, mock_open_browser, tmp_path, monkeypatch):
+        """Should error when no PR is linked to the worktree."""
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+
+        runner.invoke(app, ["init"])
+        import yaml
+
+        with open(config_file) as f:
+            cfg = yaml.safe_load(f)
+
+        cfg["repos"] = {
+            "test": {"url": "git@github.com:owner/repo.git", "owner_repo": "owner/repo"}
+        }
+        cfg["worktrees"] = {
+            "test::feature": {
+                "repo": "test",
+                "branch": "feature",
+                "pr": None,
+                "start_point": "origin/HEAD",
+            }
+        }
+
+        with open(config_file, "w") as f:
+            yaml.safe_dump(cfg, f)
+
+        result = runner.invoke(app, ["pr", "open", "test", "feature"])
+
+        assert result.exit_code == 1
+        assert "No PR linked" in result.stdout
+        mock_open_browser.assert_not_called()
+
+    def test_pr_open_worktree_not_found(self, tmp_path, monkeypatch):
+        """Should error when worktree doesn't exist."""
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+
+        runner.invoke(app, ["init"])
+
+        result = runner.invoke(app, ["pr", "open", "test", "feature"])
+
+        assert result.exit_code == 1
+        assert "not found" in result.stdout
+
+    @patch("repo_cli.main.webbrowser.open")
+    @patch("repo_cli.gh_ops.open_pr_in_browser")
+    def test_pr_open_no_owner_repo_gh_unavailable(
+        self, mock_open_browser, mock_wb_open, tmp_path, monkeypatch
+    ):
+        """Should error when gh fails and no owner_repo configured."""
+        mock_open_browser.return_value = False
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+
+        runner.invoke(app, ["init"])
+        import yaml
+
+        with open(config_file) as f:
+            cfg = yaml.safe_load(f)
+
+        cfg["repos"] = {"test": {"url": "git@github.com:owner/repo.git"}}
+        cfg["worktrees"] = {
+            "test::feature": {
+                "repo": "test",
+                "branch": "feature",
+                "pr": 789,
+                "start_point": "origin/HEAD",
+            }
+        }
+
+        with open(config_file, "w") as f:
+            yaml.safe_dump(cfg, f)
+
+        result = runner.invoke(app, ["pr", "open", "test", "feature"])
+
+        assert result.exit_code == 1
+        assert "Cannot open PR" in result.stdout
+        mock_wb_open.assert_not_called()
+
+    @patch("repo_cli.main.webbrowser.open")
+    @patch("repo_cli.gh_ops.open_pr_in_browser")
+    def test_pr_open_auto_detect_from_cwd(
+        self, mock_open_browser, mock_wb_open, tmp_path, monkeypatch
+    ):
+        """Should auto-detect repo/branch when CWD is inside a worktree."""
+        mock_open_browser.return_value = True
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+
+        runner.invoke(app, ["init"])
+        import yaml
+
+        # Set base_dir to tmp_path so worktree paths resolve there
+        with open(config_file) as f:
+            cfg = yaml.safe_load(f)
+
+        cfg["base_dir"] = str(tmp_path / "code")
+        cfg["repos"] = {
+            "myrepo": {"url": "git@github.com:owner/repo.git", "owner_repo": "owner/repo"}
+        }
+        cfg["worktrees"] = {
+            "myrepo::feature": {
+                "repo": "myrepo",
+                "branch": "feature",
+                "pr": 42,
+                "start_point": "origin/main",
+            }
+        }
+
+        with open(config_file, "w") as f:
+            yaml.safe_dump(cfg, f)
+
+        # Create the worktree directory and cd into it
+        wt_dir = tmp_path / "code" / "myrepo" / "feature"
+        wt_dir.mkdir(parents=True)
+        monkeypatch.chdir(wt_dir)
+
+        # No repo/branch args — should auto-detect
+        result = runner.invoke(app, ["pr", "open"])
+
+        assert result.exit_code == 0
+        assert "Opened PR #42" in result.stdout
+        mock_open_browser.assert_called_once_with(42, "owner/repo")
+
+    def test_pr_open_auto_detect_not_in_worktree(self, tmp_path, monkeypatch):
+        """Should error when CWD is not inside any known worktree."""
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+
+        runner.invoke(app, ["init"])
+        monkeypatch.chdir(tmp_path)
+
+        result = runner.invoke(app, ["pr", "open"])
+
+        assert result.exit_code == 1
+        assert "Not inside a known worktree" in result.stdout
 
 
 class TestAutoComplete:
@@ -1199,7 +1468,7 @@ class TestE2EWorkflow:
             mock_validate.return_value = True
             mock_pr_status.return_value = "open"
 
-            result = runner.invoke(app, ["pr", "link", "testapp", "feature-100", "123"])
+            result = runner.invoke(app, ["pr", "link", "123", "testapp", "feature-100"])
             assert result.exit_code == 0
             assert "Linked PR #123" in result.stdout
 

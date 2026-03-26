@@ -4,6 +4,7 @@ import contextlib
 import platform
 import subprocess
 import sys
+import webbrowser
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated
@@ -725,11 +726,14 @@ app.add_typer(pr_app, name="pr")
 
 @pr_app.command("link")
 def pr_link(
-    repo: Annotated[str, typer.Argument(autocompletion=complete_repo)],
-    branch: Annotated[str, typer.Argument(autocompletion=complete_branch)],
     pr_number: int,
+    repo: Annotated[str | None, typer.Argument(autocompletion=complete_repo)] = None,
+    branch: Annotated[str | None, typer.Argument(autocompletion=complete_branch)] = None,
 ):
-    """Link a PR to a worktree."""
+    """Link a PR to a worktree.
+
+    If repo and branch are omitted, detects the current worktree from CWD.
+    """
     try:
         # Load config
         try:
@@ -737,6 +741,10 @@ def pr_link(
         except FileNotFoundError:
             console.print("✗ Error: Config not found. Run 'repo init' first", style="red")
             sys.exit(1)
+
+        # Auto-detect from CWD if args omitted
+        if repo is None or branch is None:
+            repo, branch = _resolve_worktree_from_cwd(cfg)
 
         worktree_key = f"{repo}::{branch}"
 
@@ -763,6 +771,92 @@ def pr_link(
         config.save_config(cfg)
 
         console.print(f"✓ Linked PR #{pr_number} to {repo}/{branch}", style="green")
+
+    except Exception as e:
+        console.print(f"✗ Error: {e}", style="red")
+        sys.exit(1)
+
+
+def _resolve_worktree_from_cwd(cfg: dict) -> tuple[str, str]:
+    """Find the worktree entry matching the current working directory.
+
+    Returns:
+        (repo, branch) tuple if CWD is inside a known worktree.
+
+    Raises:
+        SystemExit: If CWD is not inside any known worktree.
+    """
+    cwd = Path.cwd().resolve()
+    base_dir = utils.expand_path(cfg["base_dir"])
+
+    for wt in cfg.get("worktrees", {}).values():
+        repo_alias = wt["repo"]
+        branch_name = wt["branch"]
+        wt_path = utils.get_worktree_path(base_dir, repo_alias, branch_name)
+        if cwd == wt_path or cwd.is_relative_to(wt_path):
+            return repo_alias, branch_name
+
+    console.print(
+        "✗ Error: Not inside a known worktree. " "Specify repo and branch, or cd into a worktree.",
+        style="red",
+    )
+    sys.exit(1)
+
+
+@pr_app.command("open")
+def pr_open(
+    repo: Annotated[str | None, typer.Argument(autocompletion=complete_repo)] = None,
+    branch: Annotated[str | None, typer.Argument(autocompletion=complete_branch)] = None,
+):
+    """Open a linked PR in the browser.
+
+    If repo and branch are omitted, detects the current worktree from CWD.
+    """
+    try:
+        # Load config
+        try:
+            cfg = config.load_config()
+        except FileNotFoundError:
+            console.print("✗ Error: Config not found. Run 'repo init' first", style="red")
+            sys.exit(1)
+
+        # Auto-detect from CWD if args omitted
+        if repo is None or branch is None:
+            repo, branch = _resolve_worktree_from_cwd(cfg)
+
+        worktree_key = f"{repo}::{branch}"
+
+        # Check if worktree exists
+        if worktree_key not in cfg.get("worktrees", {}):
+            console.print(f"✗ Error: Worktree '{repo}/{branch}' not found", style="red")
+            sys.exit(1)
+
+        pr_number = cfg["worktrees"][worktree_key].get("pr")
+        if not pr_number:
+            console.print(
+                f"✗ Error: No PR linked to {repo}/{branch}. Use 'repo pr link' first.",
+                style="red",
+            )
+            sys.exit(1)
+
+        owner_repo = cfg.get("repos", {}).get(repo, {}).get("owner_repo")
+
+        # Try gh CLI first
+        if owner_repo and gh_ops.open_pr_in_browser(pr_number, owner_repo):
+            console.print(f"✓ Opened PR #{pr_number} in browser", style="green")
+            return
+
+        # Fallback to webbrowser if we have owner_repo
+        if owner_repo:
+            url = f"https://github.com/{owner_repo}/pull/{pr_number}"
+            webbrowser.open(url)
+            console.print(f"✓ Opened PR #{pr_number} in browser", style="green")
+            return
+
+        console.print(
+            "✗ Error: Cannot open PR — no owner_repo configured for this repo", style="red"
+        )
+        sys.exit(1)
 
     except Exception as e:
         console.print(f"✗ Error: {e}", style="red")
