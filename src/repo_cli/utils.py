@@ -135,19 +135,6 @@ def validate_path_safety(path: Path, base_dir: Path) -> None:
         raise ValueError(f"Cannot validate path safety: {e}") from e
 
 
-def validate_git_url(url: str) -> bool:
-    """Validate that a string is a valid git URL.
-
-    Args:
-        url: URL string to validate
-
-    Returns:
-        True if valid git URL, False otherwise
-    """
-    # TODO: Implement URL validation for SSH and HTTPS formats
-    raise NotImplementedError("validate_git_url not yet implemented")
-
-
 def get_repo_dir(base_dir: Path, repo: str) -> Path:
     """Get the parent directory for a repository's bare repo and worktrees.
 
