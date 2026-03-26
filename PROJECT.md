@@ -3,6 +3,11 @@ A lightweight CLI tool for managing git worktrees with PR tracking. Simplifies t
 
 ## Current Status
 
+**v0.2.0 Implementation Complete** - 2026-03-26
+- Nested directory structure migration (breaking change)
+- All 220 tests passing, lint clean
+- Branch: `feat/v0.2.0-nested-directory-structure` — uncommitted, ready for commit + PR
+
 **v0.1.5 Released** - 2026-03-19
 - https://github.com/sadpandajoe/repo-cli/releases/tag/v0.1.5
 
@@ -31,7 +36,7 @@ A lightweight CLI tool for managing git worktrees with PR tracking. Simplifies t
 
 ## Active Work
 
-**Current Focus**: Fix stale default branch in bare repos
+**Current Focus**: v0.2.0 nested directory structure (implementation complete, pending PR)
 
 ### v0.1.5 - Fix stale `refs/heads/master` causing new branches to inherit outdated state
 
@@ -186,26 +191,25 @@ Fixes before v0.2.0 breaking change:
 
 ---
 
-## Deferred to v0.2.0
+## v0.2.0 Enhancements
 
-The following enhancements are deferred to v0.2.0 (bundled with directory restructure):
+The following were bundled with v0.2.0 directory restructure:
 
-- `activate --shell` - Launch new shell in worktree
-- `delete --delete-branch/--delete-remote` - Branch cleanup flags
-- GitHub Enterprise / non-GitHub URL support
-- `create --url` flag for automation
-- Upgrade helper test coverage
-- `repo pr open` - Open PR in browser
-
-See PROJECT_v0.1.1.md for detailed implementation plans.
+- ✅ `activate --shell` - Launch new shell in worktree
+- ✅ `delete --delete-branch/--delete-remote` - Branch cleanup flags
+- ✅ GitHub Enterprise / non-GitHub URL support
+- ✅ `create --url` flag for automation
+- ✅ Nested directory structure migration (flat → nested)
+- `repo pr open` - Open PR in browser (deferred to v0.3.0)
 
 ---
 
 ## Architecture
 
-### Directory Layout
-- Bare repos: `~/code/{repo}.git/`
-- Worktrees: `~/code/{repo}-{branch}/` (percent-encoded)
+### Directory Layout (v0.2.0 nested)
+- Repo parent: `~/code/{repo}/`
+- Bare repos: `~/code/{repo}/.bare/`
+- Worktrees: `~/code/{repo}/{branch}/` (percent-encoded)
 - Config: `~/.repo-cli/config.yaml`
 
 ### Key Design Decisions
@@ -217,7 +221,7 @@ See PROJECT_v0.1.1.md for detailed implementation plans.
 
 ### Config Structure
 ```yaml
-version: "0.1.0"
+version: "0.2.0"
 base_dir: ~/code
 
 repos:
@@ -289,189 +293,26 @@ alias ra='cd $(repo activate "$@" --print)'
 - ✅ Robust .gitmodules parsing - `git config -f` instead of line matching
 - ✅ Non-interactive TTY guards - `--yes` flag, fail-fast on non-TTY
 
-### v0.2.0 - Enhancements + Directory Structure Migration
+### v0.2.0 - Nested Directory Structure (implemented)
 
-**Enhancements** (deferred from v0.1.x):
-- `activate --shell` - Launch new shell in worktree
-- `delete --delete-branch/--delete-remote` - Branch cleanup flags
-- GitHub Enterprise / non-GitHub URL support
-- `create --url` flag for automation
-- Upgrade helper test coverage
-- `repo pr open` - Open PR in browser
+**Breaking Change**: Migrated from flat to nested directory layout.
 
-**Breaking Change**: Migrate to nested directory structure (like claudette-cli)
-
-**Current structure (flat):**
+**Old → New layout:**
 ```
-~/code/
-├── superset.git/
-├── superset-feature-123/
-├── superset-bugfix-456/
-├── preset.git/
-└── preset-feature-789/
+~/code/superset.git/            → ~/code/superset/.bare/
+~/code/superset-feature-123/    → ~/code/superset/feature-123/
+~/code/preset.git/              → ~/code/preset/.bare/
 ```
 
-**New structure (nested):**
-```
-~/code/
-├── superset/
-│   ├── .bare/              # Bare repo (hidden)
-│   ├── feature-123/        # Worktree
-│   ├── bugfix-456/         # Worktree
-│   └── main/               # Worktree
-└── preset/
-    ├── .bare/
-    └── feature-789/
-```
+**Implementation** (`config.py:migrate_to_nested_layout()`):
+1. Back up config (timestamped `.yaml.backup`)
+2. Per repo: move worktrees via `git worktree move` (bare repo still at old location, links intact)
+3. Move bare repo via `shutil.move`
+4. Fix worktree `.git` files to point to new bare repo location
+5. Stamp `version: "0.2.0"`
 
-**Benefits:**
-- Worktrees grouped by repo
-- Cleaner base directory
-- Natural hierarchy (repo contains branches)
-- Shorter paths
-
-**Migration plan with rollback support:**
-
-```python
-def migrate_directory_structure(config: dict[str, Any]) -> dict[str, Any]:
-    """Migrate to new directory structure with rollback support.
-
-    Old: base_dir/repo.git + base_dir/repo-branch/
-    New: base_dir/repo/.bare/ + base_dir/repo/branch/
-
-    5-step strategy:
-    1. Backup config first
-    2. Build migration plan (all worktrees to move)
-    3. Execute moves one by one with logging
-    4. On error: attempt rollback from backup
-    5. Log all operations to migrations.log
-    """
-    import logging
-
-    logger = logging.getLogger(__name__)
-    config_path = get_config_path()
-    base_dir = Path(config["base_dir"])
-
-    # STEP 1: Create timestamped backup
-    backup_path = config_path.with_suffix(f".yaml.backup.{int(time.time())}")
-    if config_path.exists():
-        shutil.copy2(config_path, backup_path)
-        logger.info(f"Created backup: {backup_path}")
-
-    # STEP 2: Build migration plan
-    migration_plan = []
-    for worktree_key, worktree_data in config.get("worktrees", {}).items():
-        repo, branch = worktree_key.split("::")
-        old_path = Path(worktree_data["path"])
-        new_path = base_dir / repo / branch
-
-        if old_path.exists() and old_path != new_path:
-            migration_plan.append({
-                "key": worktree_key,
-                "old": old_path,
-                "new": new_path,
-                "repo": repo,
-                "branch": branch,
-            })
-
-    if not migration_plan:
-        logger.info("No worktrees to migrate")
-        return config
-
-    logger.info(f"Planning to migrate {len(migration_plan)} worktrees")
-
-    # STEP 3: Execute migrations with tracking
-    migrated = []
-    try:
-        for item in migration_plan:
-            logger.info(f"Migrating {item['key']}: {item['old']} -> {item['new']}")
-
-            bare_repo = base_dir / f"{item['repo']}.git"
-            item['new'].parent.mkdir(parents=True, exist_ok=True)
-
-            subprocess.run(
-                ["git", "-C", str(bare_repo), "worktree", "move",
-                 str(item['old']), str(item['new'])],
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-
-            config["worktrees"][item['key']]["path"] = str(item['new'])
-            migrated.append(item)
-            logger.info(f"✓ Migrated {item['key']}")
-
-    except subprocess.CalledProcessError as e:
-        # STEP 4: Rollback on error
-        logger.error(f"Migration failed: {e.stderr}")
-        logger.warning(f"Attempting rollback of {len(migrated)} completed migrations...")
-
-        rollback_failures = []
-        for item in reversed(migrated):
-            try:
-                bare_repo = base_dir / f"{item['repo']}.git"
-                subprocess.run(
-                    ["git", "-C", str(bare_repo), "worktree", "move",
-                     str(item['new']), str(item['old'])],
-                    capture_output=True,
-                    text=True,
-                    check=True,
-                )
-                logger.info(f"✓ Rolled back {item['key']}")
-            except Exception as rollback_error:
-                rollback_failures.append(item['key'])
-                logger.error(f"✗ Failed to rollback {item['key']}: {rollback_error}")
-
-        # Restore config from backup
-        if backup_path.exists():
-            shutil.copy2(backup_path, config_path)
-            logger.info("Restored config from backup")
-
-        if rollback_failures:
-            raise Exception(
-                f"Migration failed and rollback partially failed. "
-                f"Manual intervention required for: {', '.join(rollback_failures)}. "
-                f"Config backup available at: {backup_path}"
-            )
-        else:
-            raise Exception(
-                f"Migration failed but rollback succeeded. Original error: {e.stderr}"
-            )
-
-    # STEP 5: Save updated config (using atomic write from v0.1.1)
-    save_config(config)
-    logger.info(f"Migration complete. Backup retained at: {backup_path}")
-
-    return config
-
-# Logging setup
-def setup_migration_logging() -> None:
-    """Configure logging for migration operations."""
-    log_path = get_config_path().parent / "migrations.log"
-
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.FileHandler(log_path),
-            logging.StreamHandler()  # Also print to console
-        ]
-    )
-```
-
-**Safety features:**
-- ✅ Timestamped backup before any changes
-- ✅ All operations logged to `~/.repo-cli/migrations.log`
-- ✅ Automatic rollback on any failure
-- ✅ Partial migration recovery (rolls back completed moves)
-- ✅ Clear error messages for manual intervention if needed
-- ✅ Backup retained for 30+ days (user can manually delete)
-- ✅ Uses atomic config writes from v0.1.1
-
-**Backward compatibility:**
-- Detects old structure automatically (flat paths)
-- Migrates transparently on first run after v0.2.0 upgrade
-- Version bump to v0.2.0 (breaking change for manual scripts)
+**Safety**: per-repo error isolation, idempotent re-run, collision detection, CWD warning.
+**Migration ordering in `load_config()`**: `migrate_config()` → `migrate_worktree_paths()` → `migrate_to_nested_layout()`
 
 ### v0.3.0 - Enhanced Workflows
 - `repo pr create/open` - PR creation/opening
@@ -528,7 +369,7 @@ python3.11 -m pip install --user -e .
 ```
 
 ### Testing
-- **208 tests** - All passing
+- **220 tests** - All passing
 - Unit tests for all modules
 - E2E workflow tests
 - Security/validation tests

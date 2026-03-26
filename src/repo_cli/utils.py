@@ -148,6 +148,28 @@ def validate_git_url(url: str) -> bool:
     raise NotImplementedError("validate_git_url not yet implemented")
 
 
+def get_repo_dir(base_dir: Path, repo: str) -> Path:
+    """Get the parent directory for a repository's bare repo and worktrees.
+
+    Args:
+        base_dir: Base directory for all repositories
+        repo: Repository alias
+
+    Returns:
+        Path to the repository parent directory (base_dir/repo/)
+
+    Raises:
+        ValueError: If repo contains invalid characters
+    """
+    validate_repo_alias(repo)
+
+    path = base_dir / repo
+
+    validate_path_safety(path, base_dir)
+
+    return path
+
+
 def get_worktree_path(base_dir: Path, repo: str, branch: str) -> Path:
     """Get the path for a worktree.
 
@@ -171,7 +193,7 @@ def get_worktree_path(base_dir: Path, repo: str, branch: str) -> Path:
     # Example: feature/foo -> feature%2Ffoo
     safe_branch = quote(branch, safe="")
 
-    path = base_dir / f"{repo}-{safe_branch}"
+    path = base_dir / repo / safe_branch
 
     # Additional safety check
     validate_path_safety(path, base_dir)
@@ -195,7 +217,7 @@ def get_bare_repo_path(base_dir: Path, repo: str) -> Path:
     # Validate input to prevent path traversal
     validate_repo_alias(repo)
 
-    path = base_dir / f"{repo}.git"
+    path = base_dir / repo / ".bare"
 
     # Additional safety check
     validate_path_safety(path, base_dir)

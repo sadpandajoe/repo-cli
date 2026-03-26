@@ -126,7 +126,12 @@ def init(
         base_path.mkdir(parents=True, exist_ok=True)
 
         # Create config with absolute path
-        initial_config = {"base_dir": str(base_path), "repos": {}, "worktrees": {}}
+        initial_config = {
+            "base_dir": str(base_path),
+            "repos": {},
+            "worktrees": {},
+            "version": "0.2.0",
+        }
         config.save_config(initial_config)
 
         if force:
@@ -328,6 +333,8 @@ def create(
 
         # Clone bare repo if it doesn't exist
         if not bare_repo_path.exists():
+            # Ensure repo parent directory exists (bare_repo_path is base_dir/repo/.bare)
+            bare_repo_path.parent.mkdir(parents=True, exist_ok=True)
             console.print(f"✓ Cloning {repo} as bare repository...", style="cyan")
             try:
                 git_ops.clone_bare(repo_url, bare_repo_path)

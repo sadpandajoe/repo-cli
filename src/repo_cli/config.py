@@ -4,8 +4,11 @@ Handles loading, saving, and validating the YAML configuration file.
 Parses GitHub URLs to extract owner/repo slugs.
 """
 
+import datetime
 import re
+import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -135,6 +138,165 @@ def migrate_worktree_paths(config: dict[str, Any]) -> tuple[dict[str, Any], bool
     return config, changed
 
 
+def migrate_to_nested_layout(config: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    """Migrate from flat directory layout to nested layout.
+
+    Old layout: base_dir/repo.git, base_dir/repo-branch
+    New layout: base_dir/repo/.bare, base_dir/repo/branch
+
+    Algorithm per repo:
+    1. Create repo parent dir
+    2. Move worktrees via 'git worktree move' (bare repo still at old location, links valid)
+    3. Move bare repo via shutil.move
+    4. Fix worktree .git files to point to new bare repo location
+
+    Args:
+        config: Configuration dictionary
+
+    Returns:
+        Tuple of (config, changed) where changed indicates if migration occurred
+    """
+    base_dir_str = config.get("base_dir")
+    if not base_dir_str:
+        return config, False
+
+    # Skip if already at version 0.2.0+
+    version = config.get("version", "")
+    if version >= "0.2.0":
+        return config, False
+
+    base_dir = Path(base_dir_str).expanduser().resolve()
+    if not base_dir.exists():
+        return config, False
+
+    worktrees = config.get("worktrees", {})
+    repos = config.get("repos", {})
+
+    # Collect unique repo names from both repos and worktrees
+    repo_names: set[str] = set(repos.keys())
+    for value in worktrees.values():
+        if isinstance(value, dict) and "repo" in value:
+            repo_names.add(value["repo"])
+
+    # Check if any repo actually needs migration (old bare repo exists)
+    repos_to_migrate = []
+    for repo_name in repo_names:
+        old_bare = base_dir / f"{repo_name}.git"
+        if old_bare.exists():
+            repos_to_migrate.append(repo_name)
+
+    if not repos_to_migrate:
+        # No old-layout repos found; just stamp version
+        config["version"] = "0.2.0"
+        return config, True
+
+    # Back up config before migration
+    config_path = get_config_path()
+    if config_path.exists():
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_path = config_path.with_suffix(f".yaml.backup.{timestamp}")
+        shutil.copy2(config_path, backup_path)
+
+    # Migrate each repo
+    for repo_name in repos_to_migrate:
+        old_bare = base_dir / f"{repo_name}.git"
+        new_repo_dir = base_dir / repo_name
+        new_bare = new_repo_dir / ".bare"
+
+        try:
+            # Collision check: if repo dir exists and is NOT ours, skip
+            if new_repo_dir.exists() and not new_bare.exists():
+                print(
+                    f"⚠ Warning: '{new_repo_dir}' already exists and is not a repo-cli directory. "
+                    f"Skipping migration for '{repo_name}'.",
+                    file=sys.stderr,
+                )
+                continue
+
+            # Step 1: Create repo parent dir
+            new_repo_dir.mkdir(parents=True, exist_ok=True)
+
+            # Step 2: Move worktrees FIRST (bare repo still at old location, git links valid)
+            for _key, wt_value in worktrees.items():
+                if not isinstance(wt_value, dict) or wt_value.get("repo") != repo_name:
+                    continue
+
+                branch = wt_value.get("branch")
+                if not branch:
+                    continue
+
+                safe_branch = quote(branch, safe="")
+                old_wt = base_dir / f"{repo_name}-{safe_branch}"
+                new_wt = new_repo_dir / safe_branch
+
+                if old_wt.exists() and not new_wt.exists():
+                    try:
+                        subprocess.run(
+                            [
+                                "git",
+                                "-C",
+                                str(old_bare),
+                                "worktree",
+                                "move",
+                                str(old_wt),
+                                str(new_wt),
+                            ],
+                            check=True,
+                            capture_output=True,
+                            text=True,
+                        )
+
+                        # CWD warning
+                        try:
+                            cwd = Path.cwd()
+                            if cwd == old_wt or old_wt in cwd.parents:
+                                print(
+                                    f"⚠ Your shell is in a moved worktree. Run:  cd {new_wt}",
+                                    file=sys.stderr,
+                                )
+                        except OSError:
+                            pass
+
+                    except (subprocess.CalledProcessError, FileNotFoundError):
+                        pass
+
+            # Step 3: Move bare repo
+            if not new_bare.exists():
+                shutil.move(str(old_bare), str(new_bare))
+
+            # Step 4: Fix worktree .git files to point to new bare repo location
+            # Runs unconditionally when new_bare exists — handles both fresh moves
+            # and recovery from a previous partial migration.
+            # Each worktree has a .git file containing: gitdir: /path/to/bare/worktrees/<name>
+            worktrees_meta_dir = new_bare / "worktrees"
+            if worktrees_meta_dir.exists():
+                old_bare_str = str(old_bare)
+                new_bare_str = str(new_bare)
+                for wt_meta in worktrees_meta_dir.iterdir():
+                    if not wt_meta.is_dir():
+                        continue
+                    gitdir_file = wt_meta / "gitdir"
+                    if gitdir_file.exists():
+                        wt_path_str = gitdir_file.read_text().strip()
+                        wt_path = Path(wt_path_str)
+                        git_file = wt_path / ".git"
+                        if git_file.exists():
+                            content = git_file.read_text()
+                            if old_bare_str in content:
+                                git_file.write_text(content.replace(old_bare_str, new_bare_str))
+
+        except Exception:
+            # Per-repo error handling: one repo failing doesn't block others
+            print(
+                f"⚠ Warning: Migration failed for '{repo_name}'. It will be retried on next run.",
+                file=sys.stderr,
+            )
+            continue
+
+    config["version"] = "0.2.0"
+    return config, True
+
+
 def load_config() -> dict[str, Any]:
     """Load configuration from YAML file.
 
@@ -167,8 +329,11 @@ def load_config() -> dict[str, Any]:
         # Migrate worktree paths from __ to percent-encoding
         data, paths_changed = migrate_worktree_paths(data)
 
+        # Migrate from flat to nested directory layout
+        data, nested_changed = migrate_to_nested_layout(data)
+
         # Only save if migrations actually changed something
-        if config_changed or paths_changed:
+        if config_changed or paths_changed or nested_changed:
             save_config(data)
 
         return data

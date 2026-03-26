@@ -160,7 +160,7 @@ class TestCliCreate:
         runner.invoke(app, ["register", "test", "git@github.com:owner/repo.git"])
 
         # Create bare repo directory to simulate existing repo
-        bare_repo = base_dir / "test.git"
+        bare_repo = base_dir / "test" / ".bare"
         bare_repo.mkdir(parents=True)
 
         # Mock fetch_repo to raise GitOperationError
@@ -192,7 +192,7 @@ class TestCliCreate:
         runner.invoke(app, ["register", "test", "git@github.com:owner/repo.git"])
 
         # Create bare repo directory to simulate existing repo
-        bare_repo = base_dir / "test.git"
+        bare_repo = base_dir / "test" / ".bare"
         bare_repo.mkdir(parents=True)
 
         # Mock git operations
@@ -496,7 +496,7 @@ class TestCliActivate:
         """Should show formatted output with cd hint."""
         config_file = tmp_path / ".repo-cli" / "config.yaml"
         base_dir = tmp_path / "code"
-        worktree_path = base_dir / "myrepo-main"
+        worktree_path = base_dir / "myrepo" / "main"
 
         monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
 
@@ -512,6 +512,7 @@ class TestCliActivate:
                     "start_point": "origin/HEAD",
                 }
             },
+            "version": "0.2.0",
         }
         config.save_config(cfg)
 
@@ -528,7 +529,7 @@ class TestCliActivate:
         """Should print path only for shell integration."""
         config_file = tmp_path / ".repo-cli" / "config.yaml"
         base_dir = tmp_path / "code"
-        worktree_path = base_dir / "myrepo-feature"
+        worktree_path = base_dir / "myrepo" / "feature"
 
         monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
 
@@ -544,6 +545,7 @@ class TestCliActivate:
                     "start_point": "origin/HEAD",
                 }
             },
+            "version": "0.2.0",
         }
         config.save_config(cfg)
 
@@ -553,7 +555,7 @@ class TestCliActivate:
         result = runner.invoke(app, ["activate", "myrepo", "feature", "--print"])
 
         assert result.exit_code == 0
-        assert "myrepo-feature" in result.stdout
+        assert "myrepo/feature" in result.stdout  # Verify nested path structure
         assert "Worktree path:" not in result.stdout  # Should be plain output
 
     def test_activate_worktree_not_found(self, tmp_path, monkeypatch):
@@ -846,7 +848,7 @@ class TestNonInteractiveConfirmation:
         runner.invoke(app, ["init", "--base-dir", str(base_dir)])
         runner.invoke(app, ["register", "test", "git@github.com:owner/repo.git"])
 
-        bare_repo = base_dir / "test.git"
+        bare_repo = base_dir / "test" / ".bare"
         bare_repo.mkdir(parents=True)
 
         from repo_cli.git_ops import GitOperationError
@@ -871,7 +873,7 @@ class TestNonInteractiveConfirmation:
         runner.invoke(app, ["init", "--base-dir", str(base_dir)])
         runner.invoke(app, ["register", "test", "git@github.com:owner/repo.git"])
 
-        bare_repo = base_dir / "test.git"
+        bare_repo = base_dir / "test" / ".bare"
         bare_repo.mkdir(parents=True)
 
         from repo_cli.git_ops import GitOperationError
@@ -905,7 +907,7 @@ class TestNonInteractiveConfirmation:
             "test::feature": {
                 "repo": "test",
                 "branch": "feature",
-                "path": str(base_dir / "test-feature"),
+                "path": str(base_dir / "test" / "feature"),
             }
         }
         config.save_config(cfg)
@@ -931,7 +933,7 @@ class TestNonInteractiveConfirmation:
             "test::feature": {
                 "repo": "test",
                 "branch": "feature",
-                "path": str(base_dir / "test-feature"),
+                "path": str(base_dir / "test" / "feature"),
             }
         }
         config.save_config(cfg)
@@ -957,12 +959,12 @@ class TestNonInteractiveConfirmation:
             "test::feature": {
                 "repo": "test",
                 "branch": "feature",
-                "path": str(base_dir / "test-feature"),
+                "path": str(base_dir / "test" / "feature"),
             }
         }
         config.save_config(cfg)
 
-        worktree_dir = base_dir / "test-feature"
+        worktree_dir = base_dir / "test" / "feature"
         worktree_dir.mkdir(parents=True, exist_ok=True)
 
         with (
@@ -990,7 +992,7 @@ class TestNonInteractiveConfirmation:
             "test::feature": {
                 "repo": "test",
                 "branch": "feature",
-                "path": str(base_dir / "test-feature"),
+                "path": str(base_dir / "test" / "feature"),
             }
         }
         config.save_config(cfg)
@@ -1014,7 +1016,7 @@ class TestNonInteractiveConfirmation:
         runner.invoke(app, ["init", "--base-dir", str(base_dir)])
 
         # Create bare repo with a different URL
-        bare_repo = base_dir / "test.git"
+        bare_repo = base_dir / "test" / ".bare"
         bare_repo.mkdir(parents=True)
 
         with (
@@ -1035,7 +1037,7 @@ class TestNonInteractiveConfirmation:
         runner.invoke(app, ["init", "--base-dir", str(base_dir)])
 
         # Create bare repo with a different URL
-        bare_repo = base_dir / "test.git"
+        bare_repo = base_dir / "test" / ".bare"
         bare_repo.mkdir(parents=True)
 
         with (
@@ -1111,8 +1113,8 @@ class TestE2EWorkflow:
         # Setup paths
         config_file = tmp_path / ".repo-cli" / "config.yaml"
         base_dir = tmp_path / "code"
-        bare_repo_path = base_dir / "testapp.git"
-        worktree_path = base_dir / "testapp-feature-100"
+        bare_repo_path = base_dir / "testapp" / ".bare"
+        worktree_path = base_dir / "testapp" / "feature-100"
 
         monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
 
