@@ -127,6 +127,7 @@ class TestConfigLoadSave:
             "worktrees": {
                 "preset::feature-123": {"repo": "preset", "branch": "feature-123", "pr": 4567}
             },
+            "version": "0.2.0",
         }
 
         save_config(original_config)
@@ -430,12 +431,12 @@ class TestMigrateConfig:
         # Should have migrated format
         assert "superset::6.0" in loaded["worktrees"]
         assert "superset-6.0" not in loaded["worktrees"]
-        assert loaded["version"] == "0.1.0"
+        assert loaded["version"] == "0.2.0"
 
         # Migration should be persisted to disk
         reloaded = load_config()
         assert "superset::6.0" in reloaded["worktrees"]
-        assert reloaded["version"] == "0.1.0"
+        assert reloaded["version"] == "0.2.0"
 
 
 class TestMigrateWorktreePaths:
@@ -663,3 +664,241 @@ class TestMigrateWorktreePaths:
 
         # Should not report change (no base_dir)
         assert changed is False
+
+
+class TestMigrateToNestedLayout:
+    """Tests for migrate_to_nested_layout function."""
+
+    def test_bare_repo_moves_to_dotbare(self, tmp_path):
+        """Should move repo.git to repo/.bare."""
+        base_dir = tmp_path / "code"
+        base_dir.mkdir()
+
+        # Create old-layout bare repo
+        old_bare = base_dir / "myrepo.git"
+        old_bare.mkdir()
+        (old_bare / "HEAD").write_text("ref: refs/heads/main\n")
+
+        config = {
+            "base_dir": str(base_dir),
+            "repos": {"myrepo": {"url": "git@github.com:owner/myrepo.git"}},
+            "worktrees": {},
+        }
+
+        from repo_cli.config import migrate_to_nested_layout
+
+        result, changed = migrate_to_nested_layout(config)
+
+        assert changed is True
+        assert not old_bare.exists()
+        assert (base_dir / "myrepo" / ".bare").exists()
+        assert (base_dir / "myrepo" / ".bare" / "HEAD").read_text() == "ref: refs/heads/main\n"
+        assert result["version"] == "0.2.0"
+
+    def test_worktree_moves_to_nested_path(self, tmp_path):
+        """Should move worktrees to nested paths via git worktree move."""
+        import subprocess
+
+        base_dir = tmp_path / "code"
+        base_dir.mkdir()
+
+        # Set up real bare repo with a worktree
+        old_bare = base_dir / "myrepo.git"
+        old_bare.mkdir()
+        subprocess.run(["git", "init", "--bare", str(old_bare)], check=True, capture_output=True)
+
+        # Create initial commit
+        temp_clone = base_dir / "temp"
+        subprocess.run(
+            ["git", "clone", str(old_bare), str(temp_clone)], check=True, capture_output=True
+        )
+        subprocess.run(
+            ["git", "-C", str(temp_clone), "config", "user.name", "Test User"],
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(temp_clone), "config", "user.email", "test@example.com"],
+            check=True,
+            capture_output=True,
+        )
+        (temp_clone / "README.md").write_text("test")
+        subprocess.run(["git", "-C", str(temp_clone), "add", "."], check=True, capture_output=True)
+        subprocess.run(
+            ["git", "-C", str(temp_clone), "commit", "-m", "init"],
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(["git", "-C", str(temp_clone), "push"], check=True, capture_output=True)
+
+        # Create old-layout worktree
+        old_wt = base_dir / "myrepo-main"
+        subprocess.run(
+            ["git", "-C", str(old_bare), "worktree", "add", str(old_wt), "--detach"],
+            check=True,
+            capture_output=True,
+        )
+        (old_wt / "test.txt").write_text("hello")
+
+        config = {
+            "base_dir": str(base_dir),
+            "repos": {"myrepo": {"url": "git@github.com:owner/myrepo.git"}},
+            "worktrees": {
+                "myrepo::main": {"repo": "myrepo", "branch": "main", "pr": None},
+            },
+        }
+
+        from repo_cli.config import migrate_to_nested_layout
+
+        result, changed = migrate_to_nested_layout(config)
+
+        assert changed is True
+        assert not old_wt.exists()
+        new_wt = base_dir / "myrepo" / "main"
+        assert new_wt.exists()
+        assert (new_wt / "test.txt").read_text() == "hello"
+
+    def test_idempotency(self, tmp_path):
+        """Running migration twice should be a no-op the second time."""
+        base_dir = tmp_path / "code"
+        base_dir.mkdir()
+
+        # Create old-layout bare repo
+        old_bare = base_dir / "myrepo.git"
+        old_bare.mkdir()
+        (old_bare / "HEAD").write_text("ref: refs/heads/main\n")
+
+        config = {
+            "base_dir": str(base_dir),
+            "repos": {"myrepo": {"url": "git@github.com:owner/myrepo.git"}},
+            "worktrees": {},
+        }
+
+        from repo_cli.config import migrate_to_nested_layout
+
+        # First run
+        result, changed = migrate_to_nested_layout(config)
+        assert changed is True
+        assert result["version"] == "0.2.0"
+
+        # Second run — already at 0.2.0, should skip
+        result2, changed2 = migrate_to_nested_layout(result)
+        assert changed2 is False
+
+    def test_collision_detection_skips_existing_dir(self, tmp_path):
+        """Should skip migration when repo dir exists but is not a repo-cli directory."""
+        base_dir = tmp_path / "code"
+        base_dir.mkdir()
+
+        # Create old-layout bare repo
+        old_bare = base_dir / "myrepo.git"
+        old_bare.mkdir()
+        (old_bare / "HEAD").write_text("ref: refs/heads/main\n")
+
+        # Create collision: a directory at base_dir/myrepo that's NOT a repo-cli repo dir
+        collision_dir = base_dir / "myrepo"
+        collision_dir.mkdir()
+        (collision_dir / "unrelated.txt").write_text("something")
+
+        config = {
+            "base_dir": str(base_dir),
+            "repos": {"myrepo": {"url": "git@github.com:owner/myrepo.git"}},
+            "worktrees": {},
+        }
+
+        from repo_cli.config import migrate_to_nested_layout
+
+        result, changed = migrate_to_nested_layout(config)
+
+        # Should still set version (migration ran, just skipped this repo)
+        assert result["version"] == "0.2.0"
+        # Old bare should still exist (skipped)
+        assert old_bare.exists()
+        # Collision dir should be untouched
+        assert (collision_dir / "unrelated.txt").read_text() == "something"
+
+    def test_partial_failure_continues_other_repos(self, tmp_path, monkeypatch):
+        """One repo failing migration should not block others."""
+        base_dir = tmp_path / "code"
+        base_dir.mkdir()
+
+        # Create two old-layout bare repos
+        bare_a = base_dir / "repoA.git"
+        bare_a.mkdir()
+        (bare_a / "HEAD").write_text("ref: refs/heads/main\n")
+
+        bare_b = base_dir / "repoB.git"
+        bare_b.mkdir()
+        (bare_b / "HEAD").write_text("ref: refs/heads/main\n")
+
+        config = {
+            "base_dir": str(base_dir),
+            "repos": {
+                "repoA": {"url": "git@github.com:owner/repoA.git"},
+                "repoB": {"url": "git@github.com:owner/repoB.git"},
+            },
+            "worktrees": {},
+        }
+
+        # Make repoA's directory creation fail by making it a file
+        (base_dir / "repoA").write_text("blocker")
+
+        from repo_cli.config import migrate_to_nested_layout
+
+        result, changed = migrate_to_nested_layout(config)
+
+        # repoA should have failed but repoB should succeed
+        assert (base_dir / "repoB" / ".bare" / "HEAD").exists()
+        assert result["version"] == "0.2.0"
+
+    def test_version_set_to_0_2_0(self, tmp_path):
+        """Should set version to 0.2.0 even if no repos to migrate."""
+        base_dir = tmp_path / "code"
+        base_dir.mkdir()
+
+        config = {
+            "base_dir": str(base_dir),
+            "repos": {},
+            "worktrees": {},
+            "version": "0.1.0",
+        }
+
+        from repo_cli.config import migrate_to_nested_layout
+
+        result, changed = migrate_to_nested_layout(config)
+
+        # No repos to migrate, but version should still be stamped
+        assert result["version"] == "0.2.0"
+        assert changed is True
+
+    def test_load_config_triggers_nested_migration(self, tmp_path, monkeypatch):
+        """load_config() should trigger nested layout migration."""
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+
+        base_dir = tmp_path / "code"
+        base_dir.mkdir()
+
+        # Create old-layout bare repo
+        old_bare = base_dir / "myrepo.git"
+        old_bare.mkdir()
+        (old_bare / "HEAD").write_text("ref: refs/heads/main\n")
+
+        # Save config without version (pre-0.2.0)
+        old_config = {
+            "base_dir": str(base_dir),
+            "repos": {"myrepo": {"url": "git@github.com:owner/myrepo.git"}},
+            "worktrees": {},
+        }
+        save_config(old_config)
+
+        # Loading should trigger migration
+        loaded = load_config()
+
+        assert loaded["version"] == "0.2.0"
+        assert not old_bare.exists()
+        assert (base_dir / "myrepo" / ".bare" / "HEAD").exists()
+
+        # Migration should be persisted
+        reloaded = load_config()
+        assert reloaded["version"] == "0.2.0"

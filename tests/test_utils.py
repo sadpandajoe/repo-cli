@@ -5,6 +5,7 @@ import pytest
 from repo_cli.utils import (
     expand_path,
     get_bare_repo_path,
+    get_repo_dir,
     get_worktree_path,
     validate_branch_name,
     validate_path_safety,
@@ -284,21 +285,43 @@ class TestValidatePathSafety:
         validate_path_safety(future_path, base_dir)
 
 
+class TestGetRepoDir:
+    """Tests for get_repo_dir function."""
+
+    def test_get_repo_dir_with_valid_name(self, tmp_path):
+        """Should return repo parent directory path."""
+        base_dir = tmp_path / "code"
+        path = get_repo_dir(base_dir, "myrepo")
+        assert path == base_dir / "myrepo"
+
+    def test_get_repo_dir_rejects_invalid_repo(self, tmp_path):
+        """Should raise error for invalid repo name."""
+        base_dir = tmp_path / "code"
+        with pytest.raises(ValueError, match="Invalid repo alias"):
+            get_repo_dir(base_dir, "../prod")
+
+    def test_get_repo_dir_rejects_path_traversal(self, tmp_path):
+        """Should reject path traversal attempts."""
+        base_dir = tmp_path / "code"
+        with pytest.raises(ValueError, match="Invalid repo alias"):
+            get_repo_dir(base_dir, "../../etc")
+
+
 class TestGetWorktreePath:
     """Tests for get_worktree_path with validation."""
 
     def test_get_worktree_path_with_valid_names(self, tmp_path):
-        """Should return path for valid repo and branch names."""
+        """Should return nested path for valid repo and branch names."""
         base_dir = tmp_path / "code"
         path = get_worktree_path(base_dir, "myrepo", "feature-123")
-        assert path == base_dir / "myrepo-feature-123"
+        assert path == base_dir / "myrepo" / "feature-123"
 
     def test_get_worktree_path_with_branch_slashes(self, tmp_path):
         """Should percent-encode slashes in branch names for filesystem."""
         base_dir = tmp_path / "code"
         # Slashes in branch names are percent-encoded
         path = get_worktree_path(base_dir, "myrepo", "feature/JIRA-123")
-        assert path == base_dir / "myrepo-feature%2FJIRA-123"
+        assert path == base_dir / "myrepo" / "feature%2FJIRA-123"
 
     def test_get_worktree_path_rejects_invalid_repo(self, tmp_path):
         """Should raise error for invalid repo name."""
@@ -317,10 +340,10 @@ class TestGetBareRepoPath:
     """Tests for get_bare_repo_path with validation."""
 
     def test_get_bare_repo_path_with_valid_name(self, tmp_path):
-        """Should return path for valid repo name."""
+        """Should return nested .bare path for valid repo name."""
         base_dir = tmp_path / "code"
         path = get_bare_repo_path(base_dir, "myrepo")
-        assert path == base_dir / "myrepo.git"
+        assert path == base_dir / "myrepo" / ".bare"
 
     def test_get_bare_repo_path_rejects_invalid_repo(self, tmp_path):
         """Should raise error for invalid repo name."""
