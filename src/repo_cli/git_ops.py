@@ -910,3 +910,33 @@ def pull_latest(repo_path: Path, remote: str = "origin", branch: str = "main") -
     except subprocess.CalledProcessError as e:
         stderr = e.stderr.strip() if e.stderr else "Unknown error"
         raise GitOperationError(f"Failed to pull latest changes: {stderr}") from e
+
+
+def rebase_onto(worktree_path: Path, upstream: str) -> None:
+    """Rebase the current branch in a worktree onto an upstream ref.
+
+    Args:
+        worktree_path: Path to the worktree
+        upstream: Upstream ref to rebase onto (e.g. 'origin/main')
+
+    Raises:
+        GitOperationError: If rebase fails (conflicts, detached HEAD, etc.)
+    """
+    try:
+        subprocess.run(
+            ["git", "-C", str(worktree_path), "rebase", upstream],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError as e:
+        # Abort the rebase so the worktree isn't left in a broken state
+        with contextlib.suppress(subprocess.CalledProcessError):
+            subprocess.run(
+                ["git", "-C", str(worktree_path), "rebase", "--abort"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        stderr = e.stderr.strip() if e.stderr else "Unknown error"
+        raise GitOperationError(f"Rebase failed: {stderr}") from e

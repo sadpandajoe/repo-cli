@@ -3,204 +3,10 @@ A lightweight CLI tool for managing git worktrees with PR tracking. Simplifies t
 
 ## Current Status
 
-**v0.2.0 Implementation Complete** - 2026-03-26
-- Nested directory structure migration (breaking change)
-- All 220 tests passing, lint clean
-- Branch: `feat/v0.2.0-nested-directory-structure` — uncommitted, ready for commit + PR
-
-**v0.1.5 Released** - 2026-03-19
-- https://github.com/sadpandajoe/repo-cli/releases/tag/v0.1.5
-
-### Previous Releases
-
-**v0.1.2** - 2025-12-16
-- Fix bare clone fetch refspec for remote-tracking branches
-- Migration helper `_ensure_fetch_refspec` for pre-v0.1.2 repos
-- `create_worktree` preserves local branches with unpushed commits
-- 176 passing tests (36 new)
-- See PROJECT_v0.1.2.md for details
-
-**v0.1.1** - 2025-12-03
-- HEAD branch creation bug fix
-- 140 passing tests
-- See PROJECT_v0.1.1.md for details
-
-**v0.1.0** - 2025-11-12
-- Core commands: init, register, create, list, delete, activate, pr link
-- Diagnostic tools: --version, doctor, upgrade-check, upgrade
-- Shell integration with --print flag
-- 135 comprehensive tests
-- See PROJECT_ARCHIVE.md for complete development history
-
----
-
-## Active Work
-
-**Current Focus**: v0.2.0 nested directory structure (implementation complete, pending PR)
-
-### v0.1.5 - Fix stale `refs/heads/master` causing new branches to inherit outdated state
-
-**Problem**: When `repo create` makes a new branch with the default start point (`origin/HEAD`), it resolves to the stale local `refs/heads/master` instead of `refs/remotes/origin/master`. This caused a CI failure where a new branch inherited an outdated submodule pointer (SHA `a7ea4212` from commit `642af988`) instead of the current one (`3edf7512` from `70e50719`).
-
-**Root Cause**: `git_ops.py:560-563` — `get_default_branch()` returns `"master"` which resolves to `refs/heads/master` (stale local), not `refs/remotes/origin/master` (current). Two mechanisms exist but don't help:
-1. `_cleanup_stale_local_branches()` protects HEAD branch — never deletes `refs/heads/master`
-2. `_try_fast_forward_branch()` only runs for the worktree branch, not the start point
-
-**Accepted Solution**: Two complementary fixes:
-
-1. **Fix `origin/HEAD` resolution** — resolve to `origin/{default_branch}` instead of `{default_branch}`:
-   ```python
-   # git_ops.py create_worktree() line 563
-   if start_point == "origin/HEAD":
-       default_branch = get_default_branch(repo_path)
-       resolved_start = f"origin/{default_branch}"  # was: resolved_start = default_branch
-   ```
-
-2. **Fast-forward default branch during cleanup** — keep `refs/heads/master` current:
-   ```python
-   # git_ops.py _cleanup_stale_local_branches() — insert at line 330 (blank line after try/except, before "# Get branches checked out in worktrees")
-   head_branch = head_ref.removeprefix("refs/heads/")
-   _try_fast_forward_branch(repo_path, head_branch)
-   ```
-   Update docstring to: "Maintain local branch hygiene in bare repos: fast-forward HEAD branch to match remote, then remove stale refs."
-
-**Why both**: Fix 1 addresses the semantic bug (intent of `origin/HEAD` is "latest remote"). Fix 2 prevents staleness for explicit `--from master` usage. Note: `_cleanup_stale_local_branches` runs from `fetch_repo()` after fetch, so `refs/remotes/origin/*` is already current when fast-forward executes.
-
-**Return value change**: `create_worktree()` returns `resolved_start` (line 581). After Fix 1, this changes from `"master"` to `"origin/master"` for the default start point case. This is **intentional and desirable**:
-- Display (main.py:375): `"Branch: feat (new, from origin/master)"` — more accurate than `"from master"`
-- Config metadata (main.py:403): `start_point: "origin/master"` — truthfully records the remote ref used
-- No other callers of `create_worktree()` exist beyond `main.py:create`
-
-**Files to modify**:
-- `src/repo_cli/git_ops.py` — `create_worktree()` line 563, `_cleanup_stale_local_branches()` line 328 + docstring
-- `tests/test_git_ops.py` — update existing tests, add 2+ new tests
-
-**Testing Strategy**:
-
-*Fix 1 tests (create_worktree):*
-- Update `test_create_worktree_new_branch_default_start_point`: assert `origin/master` in `worktree add` args AND assert return value is `("origin/master", True)`
-- Parameterize with `["master", "main", "develop"]` to verify fix is not hard-coded to one branch name
-- Verify `test_create_worktree_new_branch_custom_start_point` (existing, `start_point="v2.1.0"`) still passes unchanged as regression check
-
-*Fix 2 tests (cleanup fast-forward):*
-- **Mock strategy**: Patch `_try_fast_forward_branch` at function level in all `TestCleanupStaleLocalBranches` tests (not via subprocess side_effect). This avoids breaking the 7 existing tests' positional `side_effect` lists and `call_count` assertions. Fast-forward is already thoroughly tested in `TestTryFastForwardBranch`.
-- Add test: `_try_fast_forward_branch` called with HEAD branch name during cleanup
-- Add test: fast-forward skipped when default branch has no remote counterpart (mock raises, cleanup continues)
-
-*Existing test impact:*
-- All 7 `TestCleanupStaleLocalBranches` tests need `@patch("repo_cli.git_ops._try_fast_forward_branch")` as the **outermost** (topmost) decorator, so `mock_ff` is the **last** parameter (after `mock_run`). This preserves existing `mock_run` parameter position. No `side_effect` changes needed.
-  ```python
-  @patch("repo_cli.git_ops._try_fast_forward_branch")  # outermost = last param
-  @patch("repo_cli.git_ops.subprocess.run")
-  def test_example(self, mock_run, mock_ff):
-  ```
-
-**Status**: Released
-
----
-
-### v0.1.3 Scope (completed)
-
-Fixes before v0.2.0 breaking change:
-
-1. **Atomic config writes** (DONE - commit 658c3e1)
-   - Dir fsync after os.replace for full crash durability
-
-2. **Submodule deletion failure** (DONE - commit 658c3e1)
-   - Reactive deinit fallback: detect error → deinit --all --force → retry remove --force
-   - Console parameter for user feedback (dependency injection)
-
-3. **Stale worktrees on create** (DONE - commit 9789283)
-   - `_try_fast_forward_branch()` helper with 3-step safety (show-ref → merge-base → update-ref)
-
-4. **Submodule init uses --remote** (DONE - commit 2cea31e)
-   - Submodules now fetch latest from tracking branch instead of pinned commit
-
-5. **Four bugs from code review** (DONE - commit 658c3e1)
-   - Default-branch parsing with slashes (`release/2026` no longer truncated)
-   - Race condition in `create_worktree` now raises instead of returning None
-   - GitHub host detection: exact `github.com` match (no longer matches `notgithub.com`)
-   - Dir fsync after `os.replace` for full crash durability
-
-6. **Upstream tracking for worktrees** (DONE - uncommitted)
-   - `_set_upstream_tracking()` sets `branch.<name>.remote/merge` after worktree creation
-   - `git pull` now works without manual `--set-upstream-to`
-
-7. **Stale local branches from bare clone** (DONE - uncommitted)
-   - `_cleanup_stale_local_branches()` removes `refs/heads/*` duplicating `refs/remotes/origin/*`
-   - Runs after every fetch; protects HEAD, worktree branches, diverged branches
-   - `git branch` now shows only relevant branches instead of every remote branch
-
-8. **Robust .gitmodules parsing** (DONE - uncommitted)
-   - Replaced fragile line-based `path =` matching with `git config -f --get-regexp`
-   - Handles all valid git config formatting (no spaces, tabs, etc.)
-
-9. **Configurable --remote for submodules** (DONE - uncommitted)
-   - `init_submodules()` now accepts `remote: bool = True` parameter
-   - Callers can opt out with `remote=False` for reproducible/pinned builds
-
-10. **Non-interactive TTY guards** (DONE - uncommitted)
-    - `_confirm_or_fail()` helper: auto-accept with `--yes`, prompt on TTY, fail-fast on non-TTY
-    - `--yes`/`-y` flag added to `register`, `create`, `delete`, `upgrade` commands
-    - All 6 `typer.confirm()` call sites replaced with TTY-safe helper
-    - 8 new tests for non-interactive paths (204 total tests)
-
----
-
-## v0.1.3 Implementation Details
-
-### Completed
-
-**Fast-forward local tracking branches** (commit 9789283)
-- `_try_fast_forward_branch()` helper in git_ops.py with 3-step safety: show-ref → merge-base --is-ancestor → update-ref
-- Called in `create_worktree()` `has_local` path before `worktree add`
-- Diverged branches preserved as-is; no "checked out elsewhere" guard needed (git enforces)
-
-**Submodule init with --remote** (commit 2cea31e)
-- `init_submodules()` now uses `--remote` flag to fetch latest from tracking branch
-- Made configurable via `remote: bool = True` parameter (default preserves existing behavior)
-
-**Robust .gitmodules parsing** (uncommitted)
-- Replaced manual `path =` line matching with `git config -f .gitmodules --get-regexp`
-- Handles all valid git config formatting variants (no spaces, tabs, mixed indentation)
-- Error handling: exit code 1 (no matches) → return 0, other errors → `GitOperationError`
-
-**Non-interactive TTY guards** (uncommitted)
-- `_is_interactive()` + `_confirm_or_fail(message, yes)` helpers in main.py
-- `--yes`/`-y` flag added to `register`, `create`, `delete`, `upgrade` commands
-- Logic: `--yes` → auto-accept, TTY → prompt, non-TTY → fail-fast with guidance
-- All 6 `typer.confirm()` calls replaced; existing `--force` flags unchanged
-
-**Code review fixes** (commit 658c3e1)
-- Default-branch slash parsing: `"/".join(parts[3:])` instead of `parts[-1]`
-- Race condition guard: explicit `GitOperationError` when branch exists but neither ref resolves
-- GitHub host detection: `host == "github.com"` instead of `"github" in host`
-- Dir fsync after `os.replace()` in `save_config()`
-
-**Upstream tracking** (uncommitted)
-- `_set_upstream_tracking()` helper sets `branch.<name>.remote` and `branch.<name>.merge`
-- Called in `create_worktree()` for both `has_local` and `has_remote` paths
-- Skips when no remote-tracking branch exists (local-only branches)
-
-**Stale branch cleanup** (uncommitted)
-- `_cleanup_stale_local_branches()` helper in git_ops.py
-- Compares `refs/heads/*` SHAs against `refs/remotes/origin/*` — deletes exact matches
-- Protects: HEAD, worktree-checked-out branches, diverged branches, local-only branches
-- Called from `fetch_repo()` after fetch (migration for existing repos + ongoing cleanup)
-- Efficient: 4 git commands total (O(n) regardless of branch count)
-
----
-
-## v0.2.0 Enhancements
-
-The following were bundled with v0.2.0 directory restructure:
-
-- ✅ `activate --shell` - Launch new shell in worktree
-- ✅ `delete --delete-branch/--delete-remote` - Branch cleanup flags
-- ✅ GitHub Enterprise / non-GitHub URL support
-- ✅ `create --url` flag for automation
-- ✅ Nested directory structure migration (flat → nested)
-- `repo pr open` - Open PR in browser (deferred to v0.3.0)
+**On `main`** — all work through PR #16 merged (2026-03-27)
+- v0.2.0 nested directory structure (breaking change)
+- PR open, link improvements, clickable PR links
+- 220+ tests passing, lint clean
 
 ---
 
@@ -249,7 +55,9 @@ worktrees:
 - `repo list [repo]` - Display worktrees with PR status
 - `repo delete <repo> <branch>` - Remove worktree
 - `repo activate <repo> <branch>` - Navigate to worktree
+- `repo sync [repo]` - Fetch latest from origin
 - `repo pr link <repo> <branch> <pr#>` - Link PR
+- `repo pr open <repo> <branch>` - Open PR in browser
 
 ### Diagnostic Commands
 - `repo --version` - Show version
@@ -282,41 +90,9 @@ alias ra='cd $(repo activate "$@" --print)'
 
 ## Roadmap
 
-### v0.1.3 - Bug Fixes (Next)
-
-- ✅ Stale worktree fix - Fast-forward local branches on create
-- ✅ Submodule init --remote - Fetch latest tracking branch (now configurable)
-- ✅ Slash branch names, race condition, GitHub host detection, dir fsync
-- ✅ Submodule deletion fix - Handle worktrees with submodules
-- ✅ Upstream tracking - `git pull` works in worktrees without manual setup
-- ✅ Stale branch cleanup - `git branch` only shows relevant branches
-- ✅ Robust .gitmodules parsing - `git config -f` instead of line matching
-- ✅ Non-interactive TTY guards - `--yes` flag, fail-fast on non-TTY
-
-### v0.2.0 - Nested Directory Structure (implemented)
-
-**Breaking Change**: Migrated from flat to nested directory layout.
-
-**Old → New layout:**
-```
-~/code/superset.git/            → ~/code/superset/.bare/
-~/code/superset-feature-123/    → ~/code/superset/feature-123/
-~/code/preset.git/              → ~/code/preset/.bare/
-```
-
-**Implementation** (`config.py:migrate_to_nested_layout()`):
-1. Back up config (timestamped `.yaml.backup`)
-2. Per repo: move worktrees via `git worktree move` (bare repo still at old location, links intact)
-3. Move bare repo via `shutil.move`
-4. Fix worktree `.git` files to point to new bare repo location
-5. Stamp `version: "0.2.0"`
-
-**Safety**: per-repo error isolation, idempotent re-run, collision detection, CWD warning.
-**Migration ordering in `load_config()`**: `migrate_config()` → `migrate_worktree_paths()` → `migrate_to_nested_layout()`
-
 ### v0.3.0 - Enhanced Workflows
-- `repo pr create/open` - PR creation/opening
-- `repo sync` - Fetch updates for repo
+- ✅ `repo pr open` - Open PR in browser
+- ✅ `repo sync` - Fetch updates for repo
 - Worktree git status indicators
 - `repo upgrade --dry-run` - Preview changes
 - Integration tests with real git operations
@@ -337,18 +113,10 @@ alias ra='cd $(repo activate "$@" --print)'
 
 ## Known Limitations
 
-### v0.1.0 Known Issues
 - Upgrade commands depend on user environment (git, gh, uv)
 - Full upgrade workflow not covered by automated tests
 - Tested primarily on macOS (Git 2.40.0, gh 2.60.1)
 - Real-world upgrade failures may vary by platform
-
-### Monitoring Plan
-Watch for:
-1. Upgrade failures on different platforms
-2. Issues with older Git versions (< 2.20)
-3. Problems with pip vs uv installations
-4. Network/firewall issues in upgrade-check
 
 ---
 
@@ -369,7 +137,7 @@ python3.11 -m pip install --user -e .
 ```
 
 ### Testing
-- **220 tests** - All passing
+- **247 tests** - All passing
 - Unit tests for all modules
 - E2E workflow tests
 - Security/validation tests
@@ -385,11 +153,11 @@ python3.11 -m pip install --user -e .
 
 ## Previous Work
 
-All MVP development phases (Phase 1, 2, 3, Feedback Rounds 1-4, MVP polish) archived to **PROJECT_ARCHIVE.md**.
+All development from v0.1.0 through v0.2.0+ (PR #16) archived to **PROJECT_ARCHIVE.md**.
 
 See archive for:
-- Complete development timeline
-- Technical implementation details
-- All bug fixes and iterations
+- Complete release history (v0.1.0–v0.2.0)
+- Technical implementation details for all versions
+- Bug fixes, investigations, and iterations
 - Test development history
-- Code review feedback
+- Key decisions and lessons learned
