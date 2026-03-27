@@ -671,13 +671,13 @@ def remove_worktree(
             raise GitOperationError(f"Failed to remove worktree: {stderr}") from e
 
 
-def init_submodules(worktree_path: Path, *, remote: bool = True) -> int:
+def init_submodules(worktree_path: Path, *, remote: bool = False) -> int:
     """Initialize submodules in a worktree, excluding .github submodules.
 
     Args:
         worktree_path: Path to the worktree
         remote: If True, fetch latest from tracking branch instead of pinned
-            commit. Default True for convenience; set False for reproducible builds.
+            commit. Default False for fast init at pinned commit.
 
     Returns:
         Number of non-.github submodules initialized
@@ -739,7 +739,6 @@ def init_submodules(worktree_path: Path, *, remote: bool = True) -> int:
                 "submodule",
                 "update",
                 "--init",
-                "--recursive",
             ]
             if remote:
                 cmd.append("--remote")
