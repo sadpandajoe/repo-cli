@@ -462,7 +462,8 @@ def list(repo: Annotated[str | None, typer.Argument(autocompletion=complete_repo
                 owner_repo = repos.get(wt_repo, {}).get("owner_repo")
                 if owner_repo:
                     status = gh_ops.get_pr_status(pr_num, owner_repo)
-                    pr_display = f"#{pr_num}"
+                    pr_url = f"https://github.com/{owner_repo}/pull/{pr_num}"
+                    pr_display = f"[link={pr_url}]#{pr_num}[/link]"
                     status_display = status if status else "-"
                 else:
                     pr_display = f"#{pr_num}"
