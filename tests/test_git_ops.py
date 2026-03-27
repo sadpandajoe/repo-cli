@@ -18,6 +18,7 @@ from repo_cli.git_ops import (
     fetch_repo,
     get_default_branch,
     init_submodules,
+    rebase_onto,
     remove_worktree,
 )
 
@@ -1582,3 +1583,50 @@ class TestEnsureFetchRefspec:
         # Should not raise - entire function is non-fatal
         _ensure_fetch_refspec(repo_path)
         assert mock_run.call_count == 1
+
+
+class TestRebaseOnto:
+    """Tests for rebase_onto function."""
+
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_rebase_success(self, mock_run):
+        """Should run git rebase with the given upstream."""
+        mock_run.return_value = MagicMock(returncode=0)
+        wt_path = Path("/tmp/code/myrepo/feat")
+
+        rebase_onto(wt_path, "origin/main")
+
+        mock_run.assert_called_once_with(
+            ["git", "-C", str(wt_path), "rebase", "origin/main"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_rebase_conflict_aborts_and_raises(self, mock_run):
+        """Should abort rebase and raise on conflict."""
+        mock_run.side_effect = [
+            subprocess.CalledProcessError(1, ["git"], stderr="CONFLICT in file.py"),
+            MagicMock(returncode=0),  # rebase --abort succeeds
+        ]
+        wt_path = Path("/tmp/code/myrepo/feat")
+
+        with pytest.raises(GitOperationError, match="Rebase failed"):
+            rebase_onto(wt_path, "origin/main")
+
+        assert mock_run.call_count == 2
+        abort_call = mock_run.call_args_list[1]
+        assert abort_call[0][0] == ["git", "-C", str(wt_path), "rebase", "--abort"]
+
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_rebase_conflict_abort_also_fails(self, mock_run):
+        """Should still raise even if abort fails."""
+        mock_run.side_effect = [
+            subprocess.CalledProcessError(1, ["git"], stderr="CONFLICT"),
+            subprocess.CalledProcessError(1, ["git"], stderr="abort failed"),
+        ]
+        wt_path = Path("/tmp/code/myrepo/feat")
+
+        with pytest.raises(GitOperationError, match="Rebase failed"):
+            rebase_onto(wt_path, "origin/main")

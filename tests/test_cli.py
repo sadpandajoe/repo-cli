@@ -268,6 +268,255 @@ class TestCliList:
         assert "No worktrees found for 'nonexistent'" in result.stdout
 
 
+class TestCliSync:
+    """Integration tests for repo sync command."""
+
+    def test_sync_no_config(self, tmp_path, monkeypatch):
+        """Should error when config doesn't exist."""
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+
+        result = runner.invoke(app, ["sync"])
+        assert result.exit_code == 1
+        assert "Config not found" in result.stdout
+
+    def test_sync_no_repos(self, tmp_path, monkeypatch):
+        """Should show message when no repos are registered."""
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+        runner.invoke(app, ["init"])
+
+        result = runner.invoke(app, ["sync"])
+        assert result.exit_code == 0
+        assert "No repos registered" in result.stdout
+
+    def test_sync_unknown_repo(self, tmp_path, monkeypatch):
+        """Should error for unknown repo alias."""
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+        runner.invoke(app, ["init"])
+
+        import yaml
+
+        with open(config_file) as f:
+            cfg = yaml.safe_load(f)
+        cfg["repos"] = {"myrepo": {"url": "git@github.com:o/r.git", "owner_repo": "o/r"}}
+        with open(config_file, "w") as f:
+            yaml.safe_dump(cfg, f)
+
+        result = runner.invoke(app, ["sync", "nope"])
+        assert result.exit_code == 1
+        assert "Unknown repo 'nope'" in result.stdout
+
+    @patch("repo_cli.git_ops.fetch_repo")
+    def test_sync_single_repo(self, mock_fetch, tmp_path, monkeypatch):
+        """Should fetch a single specified repo."""
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+        runner.invoke(app, ["init", "--base-dir", str(tmp_path / "code")])
+
+        import yaml
+
+        with open(config_file) as f:
+            cfg = yaml.safe_load(f)
+        cfg["repos"] = {"myrepo": {"url": "git@github.com:o/r.git", "owner_repo": "o/r"}}
+        with open(config_file, "w") as f:
+            yaml.safe_dump(cfg, f)
+
+        # Create the bare repo directory so the existence check passes
+        bare_path = tmp_path / "code" / "myrepo" / ".bare"
+        bare_path.mkdir(parents=True)
+
+        result = runner.invoke(app, ["sync", "myrepo"])
+        assert result.exit_code == 0
+        assert "myrepo: fetched" in result.stdout
+        mock_fetch.assert_called_once_with(bare_path)
+
+    @patch("repo_cli.main._find_worktree_from_cwd", return_value=None)
+    @patch("repo_cli.git_ops.fetch_repo")
+    def test_sync_all_repos(self, mock_fetch, _mock_cwd, tmp_path, monkeypatch):
+        """Should fetch all repos when no argument given and not in a worktree."""
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+        runner.invoke(app, ["init", "--base-dir", str(tmp_path / "code")])
+
+        import yaml
+
+        with open(config_file) as f:
+            cfg = yaml.safe_load(f)
+        cfg["repos"] = {
+            "repo-a": {"url": "git@github.com:o/a.git", "owner_repo": "o/a"},
+            "repo-b": {"url": "git@github.com:o/b.git", "owner_repo": "o/b"},
+        }
+        with open(config_file, "w") as f:
+            yaml.safe_dump(cfg, f)
+
+        for name in ("repo-a", "repo-b"):
+            (tmp_path / "code" / name / ".bare").mkdir(parents=True)
+
+        result = runner.invoke(app, ["sync"])
+        assert result.exit_code == 0
+        assert "repo-a: fetched" in result.stdout
+        assert "repo-b: fetched" in result.stdout
+        assert mock_fetch.call_count == 2
+
+    @patch("repo_cli.git_ops.fetch_repo")
+    def test_sync_skips_missing_bare_repo(self, mock_fetch, tmp_path, monkeypatch):
+        """Should warn and skip repos whose bare directory doesn't exist."""
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+        runner.invoke(app, ["init", "--base-dir", str(tmp_path / "code")])
+
+        import yaml
+
+        with open(config_file) as f:
+            cfg = yaml.safe_load(f)
+        cfg["repos"] = {"ghost": {"url": "git@github.com:o/g.git", "owner_repo": "o/g"}}
+        with open(config_file, "w") as f:
+            yaml.safe_dump(cfg, f)
+
+        result = runner.invoke(app, ["sync", "ghost"])
+        assert result.exit_code == 0
+        assert "bare repo not found" in result.stdout
+        mock_fetch.assert_not_called()
+
+    @patch("repo_cli.git_ops.fetch_repo")
+    def test_sync_reports_fetch_error(self, mock_fetch, tmp_path, monkeypatch):
+        """Should report fetch errors per-repo without crashing."""
+        from repo_cli.git_ops import GitOperationError
+
+        mock_fetch.side_effect = GitOperationError("network timeout")
+
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+        runner.invoke(app, ["init", "--base-dir", str(tmp_path / "code")])
+
+        import yaml
+
+        with open(config_file) as f:
+            cfg = yaml.safe_load(f)
+        cfg["repos"] = {"flaky": {"url": "git@github.com:o/f.git", "owner_repo": "o/f"}}
+        with open(config_file, "w") as f:
+            yaml.safe_dump(cfg, f)
+
+        (tmp_path / "code" / "flaky" / ".bare").mkdir(parents=True)
+
+        result = runner.invoke(app, ["sync", "flaky"])
+        assert result.exit_code == 0
+        assert "flaky:" in result.stdout
+        assert "network timeout" in result.stdout
+
+
+class TestCliSyncRebase:
+    """Integration tests for repo sync rebase behavior inside a worktree."""
+
+    def _setup_config_with_worktree(self, tmp_path, monkeypatch):
+        """Helper: init config, register repo, add worktree entry."""
+        import yaml
+
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+        runner.invoke(app, ["init", "--base-dir", str(tmp_path / "code")])
+
+        with open(config_file) as f:
+            cfg = yaml.safe_load(f)
+        cfg["repos"] = {"myrepo": {"url": "git@github.com:o/r.git", "owner_repo": "o/r"}}
+        cfg["worktrees"] = {
+            "myrepo::feat": {
+                "repo": "myrepo",
+                "branch": "feat",
+                "pr": None,
+                "start_point": "origin/main",
+            }
+        }
+        with open(config_file, "w") as f:
+            yaml.safe_dump(cfg, f)
+
+        (tmp_path / "code" / "myrepo" / ".bare").mkdir(parents=True)
+        (tmp_path / "code" / "myrepo" / "feat").mkdir(parents=True)
+        return config_file
+
+    @patch("repo_cli.git_ops.rebase_onto")
+    @patch("repo_cli.git_ops.has_uncommitted_changes", return_value=False)
+    @patch("repo_cli.git_ops.fetch_repo")
+    @patch("repo_cli.main._find_worktree_from_cwd", return_value=("myrepo", "feat"))
+    def test_sync_in_worktree_fetches_and_rebases(
+        self, _mock_cwd, mock_fetch, _mock_dirty, mock_rebase, tmp_path, monkeypatch
+    ):
+        """Should fetch then rebase when CWD is inside a worktree."""
+        self._setup_config_with_worktree(tmp_path, monkeypatch)
+
+        result = runner.invoke(app, ["sync"])
+        assert result.exit_code == 0
+        assert "myrepo: fetched" in result.stdout
+        assert "rebased onto origin/main" in result.stdout
+        mock_fetch.assert_called_once()
+        mock_rebase.assert_called_once()
+
+    @patch("repo_cli.git_ops.rebase_onto")
+    @patch("repo_cli.git_ops.has_uncommitted_changes", return_value=True)
+    @patch("repo_cli.git_ops.fetch_repo")
+    @patch("repo_cli.main._find_worktree_from_cwd", return_value=("myrepo", "feat"))
+    def test_sync_skips_rebase_with_uncommitted_changes(
+        self, _mock_cwd, mock_fetch, _mock_dirty, mock_rebase, tmp_path, monkeypatch
+    ):
+        """Should fetch but skip rebase when worktree has uncommitted changes."""
+        self._setup_config_with_worktree(tmp_path, monkeypatch)
+
+        result = runner.invoke(app, ["sync"])
+        assert result.exit_code == 0
+        assert "myrepo: fetched" in result.stdout
+        assert "uncommitted changes" in result.stdout
+        mock_rebase.assert_not_called()
+
+    @patch("repo_cli.git_ops.rebase_onto")
+    @patch("repo_cli.git_ops.has_uncommitted_changes", return_value=False)
+    @patch("repo_cli.git_ops.fetch_repo")
+    @patch("repo_cli.main._find_worktree_from_cwd", return_value=("myrepo", "feat"))
+    def test_sync_reports_rebase_conflict(
+        self, _mock_cwd, mock_fetch, _mock_dirty, mock_rebase, tmp_path, monkeypatch
+    ):
+        """Should report rebase failure cleanly."""
+        from repo_cli.git_ops import GitOperationError
+
+        mock_rebase.side_effect = GitOperationError("Rebase failed: conflict")
+        self._setup_config_with_worktree(tmp_path, monkeypatch)
+
+        result = runner.invoke(app, ["sync"])
+        assert result.exit_code == 0
+        assert "myrepo: fetched" in result.stdout
+        assert "Rebase failed" in result.stdout
+
+    @patch("repo_cli.git_ops.fetch_repo")
+    @patch("repo_cli.main._find_worktree_from_cwd", return_value=("myrepo", "feat"))
+    def test_sync_skips_rebase_when_fetch_fails(self, _mock_cwd, mock_fetch, tmp_path, monkeypatch):
+        """Should not attempt rebase if fetch fails."""
+        from repo_cli.git_ops import GitOperationError
+
+        mock_fetch.side_effect = GitOperationError("network error")
+        self._setup_config_with_worktree(tmp_path, monkeypatch)
+
+        result = runner.invoke(app, ["sync"])
+        assert result.exit_code == 0
+        assert "network error" in result.stdout
+
+    @patch("repo_cli.git_ops.rebase_onto")
+    @patch("repo_cli.git_ops.has_uncommitted_changes", return_value=False)
+    @patch("repo_cli.git_ops.fetch_repo")
+    @patch("repo_cli.main._find_worktree_from_cwd", return_value=("myrepo", "feat"))
+    def test_sync_explicit_repo_skips_rebase_even_in_worktree(
+        self, _mock_cwd, mock_fetch, _mock_dirty, mock_rebase, tmp_path, monkeypatch
+    ):
+        """Explicit repo arg should fetch only, no rebase, even when in a worktree."""
+        self._setup_config_with_worktree(tmp_path, monkeypatch)
+
+        result = runner.invoke(app, ["sync", "myrepo"])
+        assert result.exit_code == 0
+        assert "myrepo: fetched" in result.stdout
+        assert "rebased" not in result.stdout
+        mock_rebase.assert_not_called()
+
+
 class TestCliPrLink:
     """Integration tests for repo pr link command."""
 

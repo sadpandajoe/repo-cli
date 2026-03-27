@@ -487,6 +487,102 @@ def list(repo: Annotated[str | None, typer.Argument(autocompletion=complete_repo
 
 
 @app.command()
+def sync(
+    repo: Annotated[str | None, typer.Argument(autocompletion=complete_repo)] = None,
+):
+    """Fetch latest changes from origin, and rebase when inside a worktree.
+
+    With no arguments from inside a worktree: fetch + rebase onto start point.
+    With a repo argument (or outside a worktree): fetch only.
+    """
+    try:
+        try:
+            cfg = config.load_config()
+        except FileNotFoundError:
+            console.print("✗ Error: Config not found. Run 'repo init' first", style="red")
+            sys.exit(1)
+
+        repos = cfg.get("repos", {})
+        if not repos:
+            console.print("No repos registered. Use 'repo register' first.", style="yellow")
+            return
+
+        base_dir = Path(cfg["base_dir"])
+
+        # When no repo arg, check if we're inside a worktree for fetch+rebase
+        if not repo:
+            wt_match = _find_worktree_from_cwd(cfg)
+            if wt_match:
+                _sync_worktree(cfg, base_dir, repos, wt_match)
+                return
+
+            # Not in a worktree — fetch all repos
+            for name in [*repos.keys()]:
+                _fetch_repo(base_dir, name)
+            return
+
+        # Explicit repo arg — fetch only
+        if repo not in repos:
+            console.print(f"✗ Error: Unknown repo '{repo}'", style="red")
+            sys.exit(1)
+        _fetch_repo(base_dir, repo)
+
+    except Exception as e:
+        console.print(f"✗ Error: {e}", style="red")
+        sys.exit(1)
+
+
+def _fetch_repo(base_dir: Path, name: str) -> bool:
+    """Fetch a single repo. Returns True on success."""
+    bare_path = utils.get_bare_repo_path(base_dir, name)
+    if not bare_path.exists():
+        console.print(f"  ⚠ {name}: bare repo not found, skipping", style="yellow")
+        return False
+    try:
+        git_ops.fetch_repo(bare_path)
+        console.print(f"  ✓ {name}: fetched", style="green")
+        return True
+    except git_ops.GitOperationError as e:
+        console.print(f"  ✗ {name}: {e}", style="red")
+        return False
+
+
+def _sync_worktree(cfg: dict, base_dir: Path, repos: dict, wt_match: tuple[str, str]) -> None:
+    """Fetch a repo and rebase the worktree branch onto its start point."""
+    repo_alias, branch = wt_match
+    wt_key = f"{repo_alias}::{branch}"
+    wt_info = cfg.get("worktrees", {}).get(wt_key, {})
+    start_point = wt_info.get("start_point", "origin/main")
+    wt_path = utils.get_worktree_path(base_dir, repo_alias, branch)
+
+    # Fetch first
+    if not _fetch_repo(base_dir, repo_alias):
+        return
+
+    # Check for uncommitted changes before rebase
+    try:
+        if git_ops.has_uncommitted_changes(wt_path):
+            console.print(
+                f"  ⚠ {repo_alias}/{branch}: uncommitted changes, skipping rebase",
+                style="yellow",
+            )
+            return
+    except git_ops.GitOperationError:
+        console.print(
+            f"  ⚠ {repo_alias}/{branch}: could not check working tree, skipping rebase",
+            style="yellow",
+        )
+        return
+
+    # Rebase onto start point
+    try:
+        git_ops.rebase_onto(wt_path, start_point)
+        console.print(f"  ✓ {repo_alias}/{branch}: rebased onto {start_point}", style="green")
+    except git_ops.GitOperationError as e:
+        console.print(f"  ✗ {repo_alias}/{branch}: {e}", style="red")
+
+
+@app.command()
 def delete(
     repo: Annotated[str, typer.Argument(autocompletion=complete_repo)],
     branch: Annotated[str, typer.Argument(autocompletion=complete_branch)],
@@ -778,14 +874,11 @@ def pr_link(
         sys.exit(1)
 
 
-def _resolve_worktree_from_cwd(cfg: dict) -> tuple[str, str]:
+def _find_worktree_from_cwd(cfg: dict) -> tuple[str, str] | None:
     """Find the worktree entry matching the current working directory.
 
     Returns:
-        (repo, branch) tuple if CWD is inside a known worktree.
-
-    Raises:
-        SystemExit: If CWD is not inside any known worktree.
+        (repo, branch) tuple if CWD is inside a known worktree, None otherwise.
     """
     cwd = Path.cwd().resolve()
     base_dir = utils.expand_path(cfg["base_dir"])
@@ -796,6 +889,22 @@ def _resolve_worktree_from_cwd(cfg: dict) -> tuple[str, str]:
         wt_path = utils.get_worktree_path(base_dir, repo_alias, branch_name)
         if cwd == wt_path or cwd.is_relative_to(wt_path):
             return repo_alias, branch_name
+
+    return None
+
+
+def _resolve_worktree_from_cwd(cfg: dict) -> tuple[str, str]:
+    """Find the worktree entry matching the current working directory.
+
+    Returns:
+        (repo, branch) tuple if CWD is inside a known worktree.
+
+    Raises:
+        SystemExit: If CWD is not inside any known worktree.
+    """
+    result = _find_worktree_from_cwd(cfg)
+    if result is not None:
+        return result
 
     console.print(
         "✗ Error: Not inside a known worktree. Specify repo and branch, or cd into a worktree.",
