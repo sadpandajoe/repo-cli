@@ -274,6 +274,9 @@ def create(
         str | None, typer.Option("--url", help="Repository URL (for lazy registration)")
     ] = None,
     yes: Annotated[bool, typer.Option("--yes", "-y", help="Auto-accept confirmations")] = False,
+    no_setup: Annotated[
+        bool, typer.Option("--no-setup", help="Skip running setup commands")
+    ] = False,
 ):
     """Create a new worktree for a branch."""
     try:
@@ -399,6 +402,27 @@ def create(
                     console.print(f"✓ Initialized {submodule_count} submodules", style="green")
             except git_ops.GitOperationError as e:
                 console.print(f"⚠ Warning: {e}", style="yellow")
+
+        # Run setup commands if configured
+        setup_commands = repo_info.get("setup", []) or []
+        if setup_commands and not no_setup:
+            console.print("✓ Running setup commands...", style="cyan")
+            for cmd in setup_commands:
+                console.print(f"  → {cmd}", style="dim")
+                try:
+                    subprocess.run(
+                        cmd,
+                        shell=True,
+                        cwd=str(worktree_path),
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                    )
+                    console.print(f"  ✓ {cmd}", style="green")
+                except subprocess.CalledProcessError as e:
+                    stderr = e.stderr.strip() if e.stderr else "unknown error"
+                    console.print(f"  ⚠ Setup command failed: {cmd}", style="yellow")
+                    console.print(f"    {stderr}", style="yellow")
 
         # Save worktree metadata (use :: delimiter to prevent collisions)
         worktree_key = f"{repo}::{branch}"
@@ -814,6 +838,96 @@ def activate(
     except Exception as e:
         console.print(f"✗ Error: {e}", style="red")
         sys.exit(1)
+
+
+# Setup subcommand group
+setup_app = typer.Typer(help="Manage per-repo setup commands", no_args_is_help=True)
+app.add_typer(setup_app, name="setup")
+
+
+@setup_app.command("add")
+def setup_add(
+    repo: Annotated[str, typer.Argument(autocompletion=complete_repo)],
+    command: str,
+):
+    """Add a setup command to a repo. Runs in order after worktree creation."""
+    try:
+        cfg = config.load_config()
+    except FileNotFoundError:
+        console.print("✗ Error: Config not found. Run 'repo init' first", style="red")
+        sys.exit(1)
+
+    repos = cfg.get("repos", {})
+    if repo not in repos:
+        console.print(f"✗ Error: Unknown repo '{repo}'", style="red")
+        sys.exit(1)
+
+    if "setup" not in repos[repo] or not repos[repo]["setup"]:
+        repos[repo]["setup"] = []
+    repos[repo]["setup"].append(command)
+    config.save_config(cfg)
+    console.print(f"✓ Added setup command to '{repo}': {command}", style="green")
+
+
+@setup_app.command("remove")
+def setup_remove(
+    repo: Annotated[str, typer.Argument(autocompletion=complete_repo)],
+    index: Annotated[
+        int, typer.Argument(help="Index of command to remove (from 'repo setup list')")
+    ],
+):
+    """Remove a setup command by index."""
+    try:
+        cfg = config.load_config()
+    except FileNotFoundError:
+        console.print("✗ Error: Config not found. Run 'repo init' first", style="red")
+        sys.exit(1)
+
+    repos = cfg.get("repos", {})
+    if repo not in repos:
+        console.print(f"✗ Error: Unknown repo '{repo}'", style="red")
+        sys.exit(1)
+
+    commands = repos[repo].get("setup", []) or []
+    if not commands:
+        console.print(f"No setup commands for '{repo}'", style="yellow")
+        return
+
+    if index < 0 or index >= len(commands):
+        console.print(f"✗ Error: Index {index} out of range (0-{len(commands) - 1})", style="red")
+        sys.exit(1)
+
+    removed = commands.pop(index)
+    repos[repo]["setup"] = commands
+    config.save_config(cfg)
+    console.print(f"✓ Removed: {removed}", style="green")
+
+
+@setup_app.command("list")
+def setup_list(
+    repo: Annotated[str, typer.Argument(autocompletion=complete_repo)],
+):
+    """Show setup commands for a repo."""
+    try:
+        cfg = config.load_config()
+    except FileNotFoundError:
+        console.print("✗ Error: Config not found. Run 'repo init' first", style="red")
+        sys.exit(1)
+
+    repos = cfg.get("repos", {})
+    if repo not in repos:
+        console.print(f"✗ Error: Unknown repo '{repo}'", style="red")
+        sys.exit(1)
+
+    commands = repos[repo].get("setup", []) or []
+    if not commands:
+        console.print(f"No setup commands for '{repo}'", style="yellow")
+        console.print(f"Add one with: repo setup add {repo} '<command>'", style="dim")
+        return
+
+    console.print(f"Setup commands for '{repo}':", style="bold")
+    for i, cmd in enumerate(commands):
+        console.print(f"  {i}: {cmd}")
 
 
 # PR subcommand group
