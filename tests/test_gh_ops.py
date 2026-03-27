@@ -2,7 +2,12 @@
 
 from unittest.mock import MagicMock, patch
 
-from repo_cli.gh_ops import get_pr_status, is_gh_available, validate_pr_exists
+from repo_cli.gh_ops import (
+    get_pr_status,
+    is_gh_available,
+    open_pr_in_browser,
+    validate_pr_exists,
+)
 
 
 class TestIsGhAvailable:
@@ -114,3 +119,38 @@ class TestValidatePrExists:
         mock_is_available.return_value = False
 
         assert validate_pr_exists(123, "owner/repo") is False
+
+
+class TestOpenPrInBrowser:
+    """Tests for open_pr_in_browser function."""
+
+    @patch("repo_cli.gh_ops.subprocess.run")
+    @patch("repo_cli.gh_ops.is_gh_available")
+    def test_open_pr_success(self, mock_is_available, mock_run):
+        """Should return True when gh opens PR in browser."""
+        mock_is_available.return_value = True
+        mock_run.return_value = MagicMock(returncode=0)
+
+        assert open_pr_in_browser(123, "owner/repo") is True
+        mock_run.assert_called_once_with(
+            ["gh", "pr", "view", "123", "--repo", "owner/repo", "--web"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    @patch("repo_cli.gh_ops.subprocess.run")
+    @patch("repo_cli.gh_ops.is_gh_available")
+    def test_open_pr_command_fails(self, mock_is_available, mock_run):
+        """Should return False when gh command fails."""
+        mock_is_available.return_value = True
+        mock_run.return_value = MagicMock(returncode=1)
+
+        assert open_pr_in_browser(999, "owner/repo") is False
+
+    @patch("repo_cli.gh_ops.is_gh_available")
+    def test_open_pr_gh_not_available(self, mock_is_available):
+        """Should return False when gh CLI not available."""
+        mock_is_available.return_value = False
+
+        assert open_pr_in_browser(123, "owner/repo") is False
