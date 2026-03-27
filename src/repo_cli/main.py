@@ -798,7 +798,7 @@ def _resolve_worktree_from_cwd(cfg: dict) -> tuple[str, str]:
             return repo_alias, branch_name
 
     console.print(
-        "✗ Error: Not inside a known worktree. " "Specify repo and branch, or cd into a worktree.",
+        "✗ Error: Not inside a known worktree. Specify repo and branch, or cd into a worktree.",
         style="red",
     )
     sys.exit(1)
