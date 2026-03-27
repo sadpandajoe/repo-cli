@@ -1166,7 +1166,7 @@ class TestInitSubmodules:
         assert count == 3
         # 1 config parse + 3 submodule updates
         assert mock_run.call_count == 4
-        # Check that each submodule was initialized individually
+        # Check that each submodule was initialized individually (no --recursive, no --remote by default)
         mock_run.assert_any_call(
             [
                 "git",
@@ -1175,8 +1175,6 @@ class TestInitSubmodules:
                 "submodule",
                 "update",
                 "--init",
-                "--recursive",
-                "--remote",
                 "sub1",
             ],
             check=True,
@@ -1191,8 +1189,6 @@ class TestInitSubmodules:
                 "submodule",
                 "update",
                 "--init",
-                "--recursive",
-                "--remote",
                 "sub2",
             ],
             check=True,
@@ -1207,8 +1203,6 @@ class TestInitSubmodules:
                 "submodule",
                 "update",
                 "--init",
-                "--recursive",
-                "--remote",
                 "sub3",
             ],
             check=True,
@@ -1251,8 +1245,6 @@ class TestInitSubmodules:
                 "submodule",
                 "update",
                 "--init",
-                "--recursive",
-                "--remote",
                 "vendor/lib",
             ],
             check=True,
@@ -1267,8 +1259,6 @@ class TestInitSubmodules:
                 "submodule",
                 "update",
                 "--init",
-                "--recursive",
-                "--remote",
                 "core/engine",
             ],
             check=True,
@@ -1339,8 +1329,8 @@ class TestInitSubmodules:
         assert count == 0
 
     @patch("repo_cli.git_ops.subprocess.run")
-    def test_init_submodules_without_remote(self, mock_run, tmp_path):
-        """Should not include --remote when remote=False."""
+    def test_init_submodules_with_remote(self, mock_run, tmp_path):
+        """Should include --remote when remote=True."""
         config_result = MagicMock(returncode=0, stdout="submodule.sub1.path sub1\n")
         update_result = MagicMock(returncode=0)
         mock_run.side_effect = [config_result, update_result]
@@ -1350,7 +1340,7 @@ class TestInitSubmodules:
         gitmodules = worktree_path / ".gitmodules"
         gitmodules.write_text("")
 
-        count = init_submodules(worktree_path, remote=False)
+        count = init_submodules(worktree_path, remote=True)
 
         assert count == 1
         mock_run.assert_any_call(
@@ -1361,7 +1351,7 @@ class TestInitSubmodules:
                 "submodule",
                 "update",
                 "--init",
-                "--recursive",
+                "--remote",
                 "sub1",
             ],
             check=True,
