@@ -217,6 +217,171 @@ class TestCliCreate:
             assert "Created worktree" in result.stdout
 
 
+class TestCliSetup:
+    """Integration tests for repo setup subcommands."""
+
+    def _init_with_repo(self, tmp_path, monkeypatch):
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+        runner.invoke(app, ["init", "--base-dir", str(tmp_path / "code")])
+        runner.invoke(app, ["register", "myrepo", "git@github.com:o/r.git"])
+        return config_file
+
+    def test_setup_add(self, tmp_path, monkeypatch):
+        """Should add a setup command to a repo."""
+        self._init_with_repo(tmp_path, monkeypatch)
+
+        result = runner.invoke(app, ["setup", "add", "myrepo", "npm ci"])
+        assert result.exit_code == 0
+        assert "Added setup command" in result.stdout
+
+        # Verify persisted
+        import yaml
+
+        with open(tmp_path / ".repo-cli" / "config.yaml") as f:
+            cfg = yaml.safe_load(f)
+        assert cfg["repos"]["myrepo"]["setup"] == ["npm ci"]
+
+    def test_setup_add_multiple(self, tmp_path, monkeypatch):
+        """Should append commands in order."""
+        self._init_with_repo(tmp_path, monkeypatch)
+
+        runner.invoke(app, ["setup", "add", "myrepo", "npm ci"])
+        runner.invoke(app, ["setup", "add", "myrepo", "npm run build"])
+
+        import yaml
+
+        with open(tmp_path / ".repo-cli" / "config.yaml") as f:
+            cfg = yaml.safe_load(f)
+        assert cfg["repos"]["myrepo"]["setup"] == ["npm ci", "npm run build"]
+
+    def test_setup_add_unknown_repo(self, tmp_path, monkeypatch):
+        """Should error for unknown repo."""
+        self._init_with_repo(tmp_path, monkeypatch)
+
+        result = runner.invoke(app, ["setup", "add", "nope", "npm ci"])
+        assert result.exit_code == 1
+        assert "Unknown repo" in result.stdout
+
+    def test_setup_list_shows_commands(self, tmp_path, monkeypatch):
+        """Should display indexed commands."""
+        self._init_with_repo(tmp_path, monkeypatch)
+        runner.invoke(app, ["setup", "add", "myrepo", "npm ci"])
+        runner.invoke(app, ["setup", "add", "myrepo", "npm run build"])
+
+        result = runner.invoke(app, ["setup", "list", "myrepo"])
+        assert result.exit_code == 0
+        assert "0: npm ci" in result.stdout
+        assert "1: npm run build" in result.stdout
+
+    def test_setup_list_empty(self, tmp_path, monkeypatch):
+        """Should show helpful message when no commands configured."""
+        self._init_with_repo(tmp_path, monkeypatch)
+
+        result = runner.invoke(app, ["setup", "list", "myrepo"])
+        assert result.exit_code == 0
+        assert "No setup commands" in result.stdout
+
+    def test_setup_remove(self, tmp_path, monkeypatch):
+        """Should remove command by index."""
+        self._init_with_repo(tmp_path, monkeypatch)
+        runner.invoke(app, ["setup", "add", "myrepo", "npm ci"])
+        runner.invoke(app, ["setup", "add", "myrepo", "npm run build"])
+
+        result = runner.invoke(app, ["setup", "remove", "myrepo", "0"])
+        assert result.exit_code == 0
+        assert "Removed: npm ci" in result.stdout
+
+        import yaml
+
+        with open(tmp_path / ".repo-cli" / "config.yaml") as f:
+            cfg = yaml.safe_load(f)
+        assert cfg["repos"]["myrepo"]["setup"] == ["npm run build"]
+
+    def test_setup_remove_out_of_range(self, tmp_path, monkeypatch):
+        """Should error for invalid index."""
+        self._init_with_repo(tmp_path, monkeypatch)
+        runner.invoke(app, ["setup", "add", "myrepo", "npm ci"])
+
+        result = runner.invoke(app, ["setup", "remove", "myrepo", "5"])
+        assert result.exit_code == 1
+        assert "out of range" in result.stdout
+
+
+class TestCliCreateSetup:
+    """Integration tests for setup command execution during create."""
+
+    @patch("repo_cli.git_ops.create_worktree", return_value=("origin/main", True))
+    @patch("repo_cli.git_ops.fetch_repo")
+    def test_create_runs_setup_commands(self, _mock_fetch, _mock_create, tmp_path, monkeypatch):
+        """Should run setup commands after worktree creation."""
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        base_dir = tmp_path / "code"
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+
+        runner.invoke(app, ["init", "--base-dir", str(base_dir)])
+        runner.invoke(app, ["register", "myrepo", "git@github.com:o/r.git"])
+        runner.invoke(app, ["setup", "add", "myrepo", "echo hello"])
+
+        bare_path = base_dir / "myrepo" / ".bare"
+        bare_path.mkdir(parents=True)
+
+        with patch("repo_cli.main.subprocess.run") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0)
+            result = runner.invoke(app, ["create", "myrepo", "feat"])
+
+        assert result.exit_code == 0
+        assert "Running setup commands" in result.stdout
+        # Verify the setup command was called via shell
+        mock_run.assert_called_once()
+        call_kwargs = mock_run.call_args
+        assert call_kwargs[0][0] == "echo hello"
+        assert call_kwargs[1]["shell"] is True
+
+    @patch("repo_cli.git_ops.create_worktree", return_value=("origin/main", True))
+    @patch("repo_cli.git_ops.fetch_repo")
+    def test_create_continues_on_setup_failure(
+        self, _mock_fetch, _mock_create, tmp_path, monkeypatch
+    ):
+        """Should warn but continue when a setup command fails."""
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        base_dir = tmp_path / "code"
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+
+        runner.invoke(app, ["init", "--base-dir", str(base_dir)])
+        runner.invoke(app, ["register", "myrepo", "git@github.com:o/r.git"])
+        runner.invoke(app, ["setup", "add", "myrepo", "false"])  # always fails
+
+        bare_path = base_dir / "myrepo" / ".bare"
+        bare_path.mkdir(parents=True)
+
+        with patch("repo_cli.main.subprocess.run") as mock_run:
+            mock_run.side_effect = subprocess.CalledProcessError(1, "false", stderr="failed")
+            result = runner.invoke(app, ["create", "myrepo", "feat"])
+
+        assert result.exit_code == 0
+        assert "Setup command failed" in result.stdout
+
+    @patch("repo_cli.git_ops.create_worktree", return_value=("origin/main", True))
+    @patch("repo_cli.git_ops.fetch_repo")
+    def test_create_no_setup_flag_skips(self, _mock_fetch, _mock_create, tmp_path, monkeypatch):
+        """Should skip setup commands with --no-setup."""
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        base_dir = tmp_path / "code"
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+
+        runner.invoke(app, ["init", "--base-dir", str(base_dir)])
+        runner.invoke(app, ["register", "myrepo", "git@github.com:o/r.git"])
+        runner.invoke(app, ["setup", "add", "myrepo", "echo hello"])
+
+        bare_path = base_dir / "myrepo" / ".bare"
+        bare_path.mkdir(parents=True)
+
+        result = runner.invoke(app, ["create", "myrepo", "feat", "--no-setup"])
+        assert result.exit_code == 0
+        assert "Running setup commands" not in result.stdout
+
+
 class TestCliList:
     """Integration tests for repo list command."""
 
