@@ -216,6 +216,335 @@ class TestCliCreate:
             assert "Do you want to create the branch anyway?" in result.stdout
             assert "Created worktree" in result.stdout
 
+    def test_create_warns_when_branch_not_on_remote(self, tmp_path, monkeypatch):
+        """Should warn and prompt when branch doesn't exist on remote."""
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        base_dir = tmp_path / "code"
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+
+        runner.invoke(app, ["init", "--base-dir", str(base_dir)])
+        runner.invoke(app, ["register", "test", "git@github.com:owner/repo.git"])
+
+        bare_repo = base_dir / "test" / ".bare"
+        bare_repo.mkdir(parents=True)
+
+        with (
+            patch("repo_cli.git_ops.fetch_repo"),
+            patch("repo_cli.git_ops.branch_exists", return_value=False),
+            patch("repo_cli.git_ops.find_similar_branches", return_value=[]),
+            patch("repo_cli.git_ops.create_worktree") as mock_create,
+            patch("repo_cli.main._is_interactive", return_value=True),
+        ):
+            mock_create.return_value = ("origin/main", True)
+
+            # User declines
+            result = runner.invoke(app, ["create", "test", "no-such-branch"], input="n\n")
+
+            assert result.exit_code == 0
+            assert "does not exist on the remote" in result.stdout
+            assert "Create 'no-such-branch' as a new branch" in result.stdout
+            assert "Cancelled" in result.stdout
+            mock_create.assert_not_called()
+
+    def test_create_proceeds_when_user_confirms_new_branch(self, tmp_path, monkeypatch):
+        """Should create new branch when user confirms."""
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        base_dir = tmp_path / "code"
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+
+        runner.invoke(app, ["init", "--base-dir", str(base_dir)])
+        runner.invoke(app, ["register", "test", "git@github.com:owner/repo.git"])
+
+        bare_repo = base_dir / "test" / ".bare"
+        bare_repo.mkdir(parents=True)
+
+        with (
+            patch("repo_cli.git_ops.fetch_repo"),
+            patch("repo_cli.git_ops.branch_exists", return_value=False),
+            patch("repo_cli.git_ops.find_similar_branches", return_value=[]),
+            patch("repo_cli.git_ops.create_worktree") as mock_create,
+            patch("repo_cli.main._is_interactive", return_value=True),
+        ):
+            mock_create.return_value = ("origin/main", True)
+
+            result = runner.invoke(app, ["create", "test", "new-feature"], input="y\n")
+
+            assert result.exit_code == 0
+            assert "does not exist on the remote" in result.stdout
+            assert "Created worktree" in result.stdout
+            mock_create.assert_called_once()
+
+    def test_create_shows_similar_branches(self, tmp_path, monkeypatch):
+        """Should suggest similar branch names when branch not found."""
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        base_dir = tmp_path / "code"
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+
+        runner.invoke(app, ["init", "--base-dir", str(base_dir)])
+        runner.invoke(app, ["register", "test", "git@github.com:owner/repo.git"])
+
+        bare_repo = base_dir / "test" / ".bare"
+        bare_repo.mkdir(parents=True)
+
+        with (
+            patch("repo_cli.git_ops.fetch_repo"),
+            patch("repo_cli.git_ops.branch_exists", return_value=False),
+            patch(
+                "repo_cli.git_ops.find_similar_branches",
+                return_value=[
+                    "feat-playwright-ci-integratoin",
+                    "feat-playwright-test",
+                ],
+            ),
+            patch("repo_cli.git_ops.create_worktree") as mock_create,
+            patch("repo_cli.main._is_interactive", return_value=True),
+        ):
+            mock_create.return_value = ("origin/main", True)
+
+            result = runner.invoke(
+                app,
+                ["create", "test", "feat-playwright-ci-integration"],
+                input="n\n",
+            )
+
+            assert result.exit_code == 0
+            assert "does not exist on the remote" in result.stdout
+            assert "Did you mean one of these?" in result.stdout
+            assert "feat-playwright-ci-integratoin" in result.stdout
+            assert "feat-playwright-test" in result.stdout
+
+    def test_create_skips_missing_branch_check_with_from_flag(self, tmp_path, monkeypatch):
+        """Should not warn about missing branch when --from is specified."""
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        base_dir = tmp_path / "code"
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+
+        runner.invoke(app, ["init", "--base-dir", str(base_dir)])
+        runner.invoke(app, ["register", "test", "git@github.com:owner/repo.git"])
+
+        bare_repo = base_dir / "test" / ".bare"
+        bare_repo.mkdir(parents=True)
+
+        with (
+            patch("repo_cli.git_ops.fetch_repo"),
+            patch("repo_cli.git_ops.branch_exists", return_value=False) as mock_exists,
+            patch("repo_cli.git_ops.create_worktree") as mock_create,
+        ):
+            mock_create.return_value = ("v2.0.0", True)
+
+            result = runner.invoke(
+                app,
+                ["create", "test", "hotfix", "--from", "v2.0.0"],
+            )
+
+            assert result.exit_code == 0
+            assert "does not exist on the remote" not in result.stdout
+            # branch_exists should not be called when --from is used
+            mock_exists.assert_not_called()
+
+    def test_create_prompts_when_branch_exists_on_remote(self, tmp_path, monkeypatch):
+        """Should show branch info and options when branch exists on remote."""
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        base_dir = tmp_path / "code"
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+
+        runner.invoke(app, ["init", "--base-dir", str(base_dir)])
+        runner.invoke(app, ["register", "test", "git@github.com:owner/repo.git"])
+
+        bare_repo = base_dir / "test" / ".bare"
+        bare_repo.mkdir(parents=True)
+
+        with (
+            patch("repo_cli.git_ops.fetch_repo"),
+            patch("repo_cli.git_ops.branch_exists", return_value=True),
+            patch(
+                "repo_cli.git_ops.get_branch_info",
+                return_value=("abc1234", "fix something", "3 days ago"),
+            ),
+            patch("repo_cli.git_ops.create_worktree") as mock_create,
+            patch("repo_cli.main._is_interactive", return_value=True),
+        ):
+            mock_create.return_value = ("origin/existing-branch", False)
+
+            # User picks option 1: use existing
+            result = runner.invoke(app, ["create", "test", "existing-branch"], input="1\n")
+
+            assert result.exit_code == 0
+            assert "already exists on the remote" in result.stdout
+            assert "abc1234 - fix something" in result.stdout
+            assert "3 days ago" in result.stdout
+            assert "Use existing remote branch" in result.stdout
+            assert "Created worktree" in result.stdout
+            mock_create.assert_called_once()
+
+    def test_create_existing_branch_cancel(self, tmp_path, monkeypatch):
+        """Should cancel when user picks option 3 for existing branch."""
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        base_dir = tmp_path / "code"
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+
+        runner.invoke(app, ["init", "--base-dir", str(base_dir)])
+        runner.invoke(app, ["register", "test", "git@github.com:owner/repo.git"])
+
+        bare_repo = base_dir / "test" / ".bare"
+        bare_repo.mkdir(parents=True)
+
+        with (
+            patch("repo_cli.git_ops.fetch_repo"),
+            patch("repo_cli.git_ops.branch_exists", return_value=True),
+            patch(
+                "repo_cli.git_ops.get_branch_info",
+                return_value=("abc1234", "fix something", "3 days ago"),
+            ),
+            patch("repo_cli.git_ops.create_worktree") as mock_create,
+            patch("repo_cli.main._is_interactive", return_value=True),
+        ):
+            # User picks option 3: cancel
+            result = runner.invoke(app, ["create", "test", "existing-branch"], input="3\n")
+
+            assert result.exit_code == 0
+            assert "Cancelled" in result.stdout
+            mock_create.assert_not_called()
+
+    def test_create_existing_branch_rename(self, tmp_path, monkeypatch):
+        """Should prompt for new name when user picks option 2."""
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        base_dir = tmp_path / "code"
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+
+        runner.invoke(app, ["init", "--base-dir", str(base_dir)])
+        runner.invoke(app, ["register", "test", "git@github.com:owner/repo.git"])
+
+        bare_repo = base_dir / "test" / ".bare"
+        bare_repo.mkdir(parents=True)
+
+        with (
+            patch("repo_cli.git_ops.fetch_repo"),
+            # First call: existing-branch exists; second call: my-new-branch doesn't
+            patch("repo_cli.git_ops.branch_exists", side_effect=[True, False]),
+            patch(
+                "repo_cli.git_ops.get_branch_info",
+                return_value=("abc1234", "fix something", "3 days ago"),
+            ),
+            patch("repo_cli.git_ops.find_similar_branches", return_value=[]),
+            patch("repo_cli.git_ops.create_worktree") as mock_create,
+            patch("repo_cli.main._is_interactive", return_value=True),
+        ):
+            mock_create.return_value = ("origin/HEAD", True)
+
+            # User picks option 2, enters new name, then confirms new branch creation
+            result = runner.invoke(
+                app, ["create", "test", "existing-branch"], input="2\nmy-new-branch\ny\n"
+            )
+
+            assert result.exit_code == 0
+            assert "New branch name" in result.stdout
+            assert "Created worktree" in result.stdout
+            mock_create.assert_called_once()
+
+    def test_create_existing_branch_yes_flag_auto_uses(self, tmp_path, monkeypatch):
+        """Should auto-use existing branch with --yes flag."""
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        base_dir = tmp_path / "code"
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+
+        runner.invoke(app, ["init", "--base-dir", str(base_dir)])
+        runner.invoke(app, ["register", "test", "git@github.com:owner/repo.git"])
+
+        bare_repo = base_dir / "test" / ".bare"
+        bare_repo.mkdir(parents=True)
+
+        with (
+            patch("repo_cli.git_ops.fetch_repo"),
+            patch("repo_cli.git_ops.branch_exists", return_value=True),
+            patch(
+                "repo_cli.git_ops.get_branch_info",
+                return_value=("abc1234", "fix something", "3 days ago"),
+            ),
+            patch("repo_cli.git_ops.create_worktree") as mock_create,
+        ):
+            mock_create.return_value = ("origin/existing-branch", False)
+
+            result = runner.invoke(app, ["create", "test", "existing-branch", "--yes"])
+
+            assert result.exit_code == 0
+            assert "already exists on the remote" in result.stdout
+            assert "Created worktree" in result.stdout
+            mock_create.assert_called_once()
+
+    def test_create_existing_branch_non_tty_without_yes_fails(self, tmp_path, monkeypatch):
+        """Should fail fast in non-interactive mode when branch exists and --yes not given."""
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        base_dir = tmp_path / "code"
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+
+        runner.invoke(app, ["init", "--base-dir", str(base_dir)])
+        runner.invoke(app, ["register", "test", "git@github.com:owner/repo.git"])
+
+        bare_repo = base_dir / "test" / ".bare"
+        bare_repo.mkdir(parents=True)
+
+        with (
+            patch("repo_cli.git_ops.fetch_repo"),
+            patch("repo_cli.git_ops.branch_exists", return_value=True),
+            patch("repo_cli.git_ops.get_branch_info", return_value=None),
+            patch("repo_cli.main._is_interactive", return_value=False),
+        ):
+            result = runner.invoke(app, ["create", "test", "existing-branch"])
+
+            assert result.exit_code == 1
+            assert "already exists on remote" in result.stdout
+
+    def test_create_yes_flag_skips_missing_branch_prompt(self, tmp_path, monkeypatch):
+        """Should auto-accept new branch creation with --yes flag."""
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        base_dir = tmp_path / "code"
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+
+        runner.invoke(app, ["init", "--base-dir", str(base_dir)])
+        runner.invoke(app, ["register", "test", "git@github.com:owner/repo.git"])
+
+        bare_repo = base_dir / "test" / ".bare"
+        bare_repo.mkdir(parents=True)
+
+        with (
+            patch("repo_cli.git_ops.fetch_repo"),
+            patch("repo_cli.git_ops.branch_exists", return_value=False),
+            patch("repo_cli.git_ops.find_similar_branches", return_value=[]),
+            patch("repo_cli.git_ops.create_worktree") as mock_create,
+        ):
+            mock_create.return_value = ("origin/main", True)
+
+            result = runner.invoke(app, ["create", "test", "brand-new", "--yes"])
+
+            assert result.exit_code == 0
+            assert "does not exist on the remote" in result.stdout
+            assert "Created worktree" in result.stdout
+
+    def test_create_non_tty_missing_branch_without_yes_fails_fast(self, tmp_path, monkeypatch):
+        """Should fail fast in non-interactive mode when branch doesn't exist and --yes not given."""
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        base_dir = tmp_path / "code"
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+
+        runner.invoke(app, ["init", "--base-dir", str(base_dir)])
+        runner.invoke(app, ["register", "test", "git@github.com:owner/repo.git"])
+
+        bare_repo = base_dir / "test" / ".bare"
+        bare_repo.mkdir(parents=True)
+
+        with (
+            patch("repo_cli.git_ops.fetch_repo"),
+            patch("repo_cli.git_ops.branch_exists", return_value=False),
+            patch("repo_cli.git_ops.find_similar_branches", return_value=[]),
+            patch("repo_cli.main._is_interactive", return_value=False),
+        ):
+            result = runner.invoke(app, ["create", "test", "no-such-branch"])
+
+            assert result.exit_code == 1
+            assert "does not exist on the remote" in result.stdout
+            assert "Confirmation required" in result.stdout
+
 
 class TestCliSetup:
     """Integration tests for repo setup subcommands."""
@@ -311,9 +640,13 @@ class TestCliSetup:
 class TestCliCreateSetup:
     """Integration tests for setup command execution during create."""
 
+    @patch("repo_cli.git_ops.get_branch_info", return_value=None)
+    @patch("repo_cli.git_ops.branch_exists", return_value=True)
     @patch("repo_cli.git_ops.create_worktree", return_value=("origin/main", True))
     @patch("repo_cli.git_ops.fetch_repo")
-    def test_create_runs_setup_commands(self, _mock_fetch, _mock_create, tmp_path, monkeypatch):
+    def test_create_runs_setup_commands(
+        self, _mock_fetch, _mock_create, _mock_exists, _mock_info, tmp_path, monkeypatch
+    ):
         """Should run setup commands after worktree creation."""
         config_file = tmp_path / ".repo-cli" / "config.yaml"
         base_dir = tmp_path / "code"
@@ -328,7 +661,7 @@ class TestCliCreateSetup:
 
         with patch("repo_cli.main.subprocess.run") as mock_run:
             mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0)
-            result = runner.invoke(app, ["create", "myrepo", "feat"])
+            result = runner.invoke(app, ["create", "myrepo", "feat", "--yes"])
 
         assert result.exit_code == 0
         assert "Running setup commands" in result.stdout
@@ -338,10 +671,12 @@ class TestCliCreateSetup:
         assert call_kwargs[0][0] == "echo hello"
         assert call_kwargs[1]["shell"] is True
 
+    @patch("repo_cli.git_ops.get_branch_info", return_value=None)
+    @patch("repo_cli.git_ops.branch_exists", return_value=True)
     @patch("repo_cli.git_ops.create_worktree", return_value=("origin/main", True))
     @patch("repo_cli.git_ops.fetch_repo")
     def test_create_continues_on_setup_failure(
-        self, _mock_fetch, _mock_create, tmp_path, monkeypatch
+        self, _mock_fetch, _mock_create, _mock_exists, _mock_info, tmp_path, monkeypatch
     ):
         """Should warn but continue when a setup command fails."""
         config_file = tmp_path / ".repo-cli" / "config.yaml"
@@ -357,14 +692,18 @@ class TestCliCreateSetup:
 
         with patch("repo_cli.main.subprocess.run") as mock_run:
             mock_run.side_effect = subprocess.CalledProcessError(1, "false", stderr="failed")
-            result = runner.invoke(app, ["create", "myrepo", "feat"])
+            result = runner.invoke(app, ["create", "myrepo", "feat", "--yes"])
 
         assert result.exit_code == 0
         assert "Setup command failed" in result.stdout
 
+    @patch("repo_cli.git_ops.get_branch_info", return_value=None)
+    @patch("repo_cli.git_ops.branch_exists", return_value=True)
     @patch("repo_cli.git_ops.create_worktree", return_value=("origin/main", True))
     @patch("repo_cli.git_ops.fetch_repo")
-    def test_create_no_setup_flag_skips(self, _mock_fetch, _mock_create, tmp_path, monkeypatch):
+    def test_create_no_setup_flag_skips(
+        self, _mock_fetch, _mock_create, _mock_exists, _mock_info, tmp_path, monkeypatch
+    ):
         """Should skip setup commands with --no-setup."""
         config_file = tmp_path / ".repo-cli" / "config.yaml"
         base_dir = tmp_path / "code"
@@ -377,7 +716,7 @@ class TestCliCreateSetup:
         bare_path = base_dir / "myrepo" / ".bare"
         bare_path.mkdir(parents=True)
 
-        result = runner.invoke(app, ["create", "myrepo", "feat", "--no-setup"])
+        result = runner.invoke(app, ["create", "myrepo", "feat", "--no-setup", "--yes"])
         assert result.exit_code == 0
         assert "Running setup commands" not in result.stdout
 
@@ -1831,7 +2170,7 @@ class TestE2EWorkflow:
             bare_repo_path.mkdir(parents=True, exist_ok=True)
             worktree_path.mkdir(parents=True, exist_ok=True)
 
-            result = runner.invoke(app, ["create", "testapp", "feature-100"])
+            result = runner.invoke(app, ["create", "testapp", "feature-100", "--yes"])
             assert result.exit_code == 0
             assert "Created worktree:" in result.stdout
             assert "feature-100" in result.stdout

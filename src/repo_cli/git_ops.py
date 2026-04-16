@@ -247,6 +247,118 @@ def branch_exists(repo_path: Path, branch: str) -> bool:
     return False
 
 
+def get_branch_info(repo_path: Path, branch: str) -> tuple[str, str, str] | None:
+    """Get summary info for a remote branch.
+
+    Args:
+        repo_path: Path to the bare repository
+        branch: Name of the branch
+
+    Returns:
+        Tuple of (short_hash, subject, relative_date) or None if not found.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo_path),
+                "log",
+                "-1",
+                "--format=%h%x00%s%x00%ar",
+                f"refs/remotes/origin/{branch}",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        parts = result.stdout.strip().split("\x00", 2)
+        if len(parts) == 3:
+            return parts[0], parts[1], parts[2]
+    except subprocess.CalledProcessError:
+        pass
+    return None
+
+
+def list_remote_branches(repo_path: Path) -> list[str]:
+    """List all remote-tracking branch names.
+
+    Args:
+        repo_path: Path to the bare repository
+
+    Returns:
+        List of branch names (without 'refs/remotes/origin/' prefix)
+    """
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo_path),
+                "for-each-ref",
+                "--format=%(refname:strip=3)",
+                "refs/remotes/origin/",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return [
+            line.strip()
+            for line in result.stdout.strip().split("\n")
+            if line.strip() and line.strip() != "HEAD"
+        ]
+    except subprocess.CalledProcessError:
+        return []
+
+
+def find_similar_branches(repo_path: Path, branch: str, max_results: int = 5) -> list[str]:
+    """Find remote branches with names similar to the given branch.
+
+    Uses simple substring and edit-distance-like matching to suggest alternatives.
+
+    Args:
+        repo_path: Path to the bare repository
+        branch: Branch name to find matches for
+        max_results: Maximum number of suggestions to return
+
+    Returns:
+        List of similar branch names, sorted by relevance
+    """
+    remote_branches = list_remote_branches(repo_path)
+    if not remote_branches:
+        return []
+
+    branch_lower = branch.lower()
+    scored: list[tuple[float, str]] = []
+
+    for rb in remote_branches:
+        rb_lower = rb.lower()
+        # Exact substring match (high priority)
+        if branch_lower in rb_lower or rb_lower in branch_lower:
+            scored.append((0.1, rb))
+            continue
+        # Common prefix length
+        common_prefix = 0
+        for a, b in zip(branch_lower, rb_lower, strict=False):
+            if a == b:
+                common_prefix += 1
+            else:
+                break
+        if common_prefix > len(branch) * 0.5:
+            scored.append((1.0 - common_prefix / max(len(branch), len(rb)), rb))
+            continue
+        # Token overlap (split on - and /)
+        branch_tokens = set(branch_lower.replace("/", "-").split("-"))
+        rb_tokens = set(rb_lower.replace("/", "-").split("-"))
+        overlap = len(branch_tokens & rb_tokens)
+        if overlap >= 2:
+            scored.append((1.0 - overlap / max(len(branch_tokens), len(rb_tokens)), rb))
+
+    scored.sort(key=lambda x: x[0])
+    return [name for _, name in scored[:max_results]]
+
+
 def _set_upstream_tracking(repo_path: Path, branch: str) -> None:
     """Configure upstream tracking so `git pull` works in worktrees.
 
