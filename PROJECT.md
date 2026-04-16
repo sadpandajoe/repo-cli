@@ -34,6 +34,9 @@ repos:
   myrepo:
     url: git@github.com:user/repo.git
     owner_repo: user/repo
+    setup:
+      - npm ci
+      - npm run build
 
 worktrees:
   myrepo::feature-123:
@@ -56,6 +59,7 @@ worktrees:
 - `repo delete <repo> <branch>` - Remove worktree
 - `repo activate <repo> <branch>` - Navigate to worktree
 - `repo sync [repo]` - Fetch latest from origin
+- `repo setup add/remove/list <repo>` - Manage setup commands
 - `repo pr link <repo> <branch> <pr#>` - Link PR
 - `repo pr open <repo> <branch>` - Open PR in browser
 
@@ -98,9 +102,9 @@ alias ra='cd $(repo activate "$@" --print)'
 - Integration tests with real git operations
 
 ### v0.4.0 - Dependency Management
+- ✅ Per-repo setup commands (`repo setup add/remove/list`)
+- ✅ `repo create` runs setup by default (skip with `--no-setup`)
 - `repo create --venv` - Auto-create Python venv
-- `repo create --install` - Auto-install dependencies
-- Per-repo setup hooks
 
 ### v0.5.0+ - Advanced Features
 - Port allocation for dev servers
@@ -137,7 +141,7 @@ python3.11 -m pip install --user -e .
 ```
 
 ### Testing
-- **247 tests** - All passing
+- **257 tests** - All passing
 - Unit tests for all modules
 - E2E workflow tests
 - Security/validation tests
