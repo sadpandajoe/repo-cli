@@ -442,8 +442,8 @@ def create(
         sys.exit(1)
 
 
-@app.command()
-def list(repo: Annotated[str | None, typer.Argument(autocompletion=complete_repo)] = None):
+@app.command(name="list")
+def list_worktrees(repo: Annotated[str | None, typer.Argument(autocompletion=complete_repo)] = None):
     """Display all worktrees with PR status."""
     try:
         # Load config
