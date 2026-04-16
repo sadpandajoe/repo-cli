@@ -336,7 +336,7 @@ def find_similar_branches(repo_path: Path, branch: str, max_results: int = 5) ->
             continue
         # Common prefix length
         common_prefix = 0
-        for a, b in zip(branch_lower, rb_lower):
+        for a, b in zip(branch_lower, rb_lower, strict=False):
             if a == b:
                 common_prefix += 1
             else:
