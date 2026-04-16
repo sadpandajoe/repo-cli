@@ -247,6 +247,39 @@ def branch_exists(repo_path: Path, branch: str) -> bool:
     return False
 
 
+def get_branch_info(repo_path: Path, branch: str) -> tuple[str, str, str] | None:
+    """Get summary info for a remote branch.
+
+    Args:
+        repo_path: Path to the bare repository
+        branch: Name of the branch
+
+    Returns:
+        Tuple of (short_hash, subject, relative_date) or None if not found.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo_path),
+                "log",
+                "-1",
+                "--format=%h%x00%s%x00%ar",
+                f"refs/remotes/origin/{branch}",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        parts = result.stdout.strip().split("\x00", 2)
+        if len(parts) == 3:
+            return parts[0], parts[1], parts[2]
+    except subprocess.CalledProcessError:
+        pass
+    return None
+
+
 def list_remote_branches(repo_path: Path) -> list[str]:
     """List all remote-tracking branch names.
 

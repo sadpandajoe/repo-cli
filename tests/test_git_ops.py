@@ -17,6 +17,7 @@ from repo_cli.git_ops import (
     create_worktree,
     fetch_repo,
     find_similar_branches,
+    get_branch_info,
     get_default_branch,
     init_submodules,
     list_remote_branches,
@@ -323,6 +324,56 @@ class TestBranchExists:
 
         assert result is False
         assert mock_run.call_count == 2
+
+
+class TestGetBranchInfo:
+    """Tests for get_branch_info function."""
+
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_returns_info_tuple(self, mock_run):
+        """Should parse short hash, subject, and relative date."""
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout="abc1234\x00fix: handle edge case\x003 days ago\n",
+        )
+
+        result = get_branch_info(Path("/tmp/repo.git"), "main")
+
+        assert result == ("abc1234", "fix: handle edge case", "3 days ago")
+        mock_run.assert_called_once()
+
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_handles_pipe_in_subject(self, mock_run):
+        """Should not break on pipe characters in commit subject."""
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout="def5678\x00feat: add foo | bar support\x001 week ago\n",
+        )
+
+        result = get_branch_info(Path("/tmp/repo.git"), "feat")
+
+        assert result == ("def5678", "feat: add foo | bar support", "1 week ago")
+
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_returns_none_on_failure(self, mock_run):
+        """Should return None when git command fails."""
+        mock_run.side_effect = subprocess.CalledProcessError(1, ["git"])
+
+        result = get_branch_info(Path("/tmp/repo.git"), "nonexistent")
+
+        assert result is None
+
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_returns_none_on_malformed_output(self, mock_run):
+        """Should return None when output has fewer than 3 parts."""
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout="abc1234\n",
+        )
+
+        result = get_branch_info(Path("/tmp/repo.git"), "main")
+
+        assert result is None
 
 
 class TestListRemoteBranches:
