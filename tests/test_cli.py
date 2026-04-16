@@ -289,10 +289,13 @@ class TestCliCreate:
         with (
             patch("repo_cli.git_ops.fetch_repo"),
             patch("repo_cli.git_ops.branch_exists", return_value=False),
-            patch("repo_cli.git_ops.find_similar_branches", return_value=[
-                "feat-playwright-ci-integratoin",
-                "feat-playwright-test",
-            ]),
+            patch(
+                "repo_cli.git_ops.find_similar_branches",
+                return_value=[
+                    "feat-playwright-ci-integratoin",
+                    "feat-playwright-test",
+                ],
+            ),
             patch("repo_cli.git_ops.create_worktree") as mock_create,
             patch("repo_cli.main._is_interactive", return_value=True),
         ):
@@ -354,7 +357,10 @@ class TestCliCreate:
         with (
             patch("repo_cli.git_ops.fetch_repo"),
             patch("repo_cli.git_ops.branch_exists", return_value=True),
-            patch("repo_cli.git_ops.get_branch_info", return_value=("abc1234", "fix something", "3 days ago")),
+            patch(
+                "repo_cli.git_ops.get_branch_info",
+                return_value=("abc1234", "fix something", "3 days ago"),
+            ),
             patch("repo_cli.git_ops.create_worktree") as mock_create,
             patch("repo_cli.main._is_interactive", return_value=True),
         ):
@@ -386,7 +392,10 @@ class TestCliCreate:
         with (
             patch("repo_cli.git_ops.fetch_repo"),
             patch("repo_cli.git_ops.branch_exists", return_value=True),
-            patch("repo_cli.git_ops.get_branch_info", return_value=("abc1234", "fix something", "3 days ago")),
+            patch(
+                "repo_cli.git_ops.get_branch_info",
+                return_value=("abc1234", "fix something", "3 days ago"),
+            ),
             patch("repo_cli.git_ops.create_worktree") as mock_create,
             patch("repo_cli.main._is_interactive", return_value=True),
         ):
@@ -413,7 +422,10 @@ class TestCliCreate:
             patch("repo_cli.git_ops.fetch_repo"),
             # First call: existing-branch exists; second call: my-new-branch doesn't
             patch("repo_cli.git_ops.branch_exists", side_effect=[True, False]),
-            patch("repo_cli.git_ops.get_branch_info", return_value=("abc1234", "fix something", "3 days ago")),
+            patch(
+                "repo_cli.git_ops.get_branch_info",
+                return_value=("abc1234", "fix something", "3 days ago"),
+            ),
             patch("repo_cli.git_ops.find_similar_branches", return_value=[]),
             patch("repo_cli.git_ops.create_worktree") as mock_create,
             patch("repo_cli.main._is_interactive", return_value=True),
@@ -445,7 +457,10 @@ class TestCliCreate:
         with (
             patch("repo_cli.git_ops.fetch_repo"),
             patch("repo_cli.git_ops.branch_exists", return_value=True),
-            patch("repo_cli.git_ops.get_branch_info", return_value=("abc1234", "fix something", "3 days ago")),
+            patch(
+                "repo_cli.git_ops.get_branch_info",
+                return_value=("abc1234", "fix something", "3 days ago"),
+            ),
             patch("repo_cli.git_ops.create_worktree") as mock_create,
         ):
             mock_create.return_value = ("origin/existing-branch", False)
@@ -629,7 +644,9 @@ class TestCliCreateSetup:
     @patch("repo_cli.git_ops.branch_exists", return_value=True)
     @patch("repo_cli.git_ops.create_worktree", return_value=("origin/main", True))
     @patch("repo_cli.git_ops.fetch_repo")
-    def test_create_runs_setup_commands(self, _mock_fetch, _mock_create, _mock_exists, _mock_info, tmp_path, monkeypatch):
+    def test_create_runs_setup_commands(
+        self, _mock_fetch, _mock_create, _mock_exists, _mock_info, tmp_path, monkeypatch
+    ):
         """Should run setup commands after worktree creation."""
         config_file = tmp_path / ".repo-cli" / "config.yaml"
         base_dir = tmp_path / "code"
@@ -684,7 +701,9 @@ class TestCliCreateSetup:
     @patch("repo_cli.git_ops.branch_exists", return_value=True)
     @patch("repo_cli.git_ops.create_worktree", return_value=("origin/main", True))
     @patch("repo_cli.git_ops.fetch_repo")
-    def test_create_no_setup_flag_skips(self, _mock_fetch, _mock_create, _mock_exists, _mock_info, tmp_path, monkeypatch):
+    def test_create_no_setup_flag_skips(
+        self, _mock_fetch, _mock_create, _mock_exists, _mock_info, tmp_path, monkeypatch
+    ):
         """Should skip setup commands with --no-setup."""
         config_file = tmp_path / ".repo-cli" / "config.yaml"
         base_dir = tmp_path / "code"

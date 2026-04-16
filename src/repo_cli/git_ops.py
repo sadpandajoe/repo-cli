@@ -303,7 +303,11 @@ def list_remote_branches(repo_path: Path) -> list[str]:
             capture_output=True,
             text=True,
         )
-        return [line.strip() for line in result.stdout.strip().split("\n") if line.strip() and line.strip() != "HEAD"]
+        return [
+            line.strip()
+            for line in result.stdout.strip().split("\n")
+            if line.strip() and line.strip() != "HEAD"
+        ]
     except subprocess.CalledProcessError:
         return []
 

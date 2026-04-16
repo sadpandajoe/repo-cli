@@ -416,7 +416,9 @@ def create(
                     break
                 if _is_interactive():
                     console.print("\n  What would you like to do?")
-                    console.print("    1. Use existing remote branch (creates worktree tracking it)")
+                    console.print(
+                        "    1. Use existing remote branch (creates worktree tracking it)"
+                    )
                     console.print("    2. Create new branch with a different name")
                     console.print("    3. Cancel")
                     choice = typer.prompt("\n  Choice", type=int, default=1)
@@ -518,7 +520,9 @@ def create(
 
 
 @app.command(name="list")
-def list_worktrees(repo: Annotated[str | None, typer.Argument(autocompletion=complete_repo)] = None):
+def list_worktrees(
+    repo: Annotated[str | None, typer.Argument(autocompletion=complete_repo)] = None,
+):
     """Display all worktrees with PR status."""
     try:
         # Load config
