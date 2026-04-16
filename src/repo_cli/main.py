@@ -336,6 +336,7 @@ def create(
         worktree_path = utils.get_worktree_path(base_dir, repo, branch)
 
         # Clone bare repo if it doesn't exist
+        fetch_ok = True
         if not bare_repo_path.exists():
             # Ensure repo parent directory exists (bare_repo_path is base_dir/repo/.bare)
             bare_repo_path.parent.mkdir(parents=True, exist_ok=True)
@@ -354,6 +355,7 @@ def create(
             try:
                 git_ops.fetch_repo(bare_repo_path)
             except git_ops.GitOperationError as e:
+                fetch_ok = False
                 console.print(f"⚠ Warning: Failed to fetch from remote: {e}", style="yellow")
                 console.print(
                     "⚠ Branch information may be stale. If the branch exists on remote,",
@@ -370,6 +372,30 @@ def create(
 
         # Determine start point
         start_point = from_ref if from_ref else "origin/HEAD"
+
+        # Warn when creating a brand new branch (not tracking an existing remote branch).
+        # Only check when fetch succeeded (fresh refs) and no explicit --from was given.
+        if fetch_ok and not from_ref and not git_ops.branch_exists(bare_repo_path, branch):
+            similar = git_ops.find_similar_branches(bare_repo_path, branch)
+            if similar:
+                console.print(
+                    f"⚠ Branch '{branch}' does not exist on the remote.",
+                    style="yellow",
+                )
+                console.print("  Did you mean one of these?", style="yellow")
+                for s in similar:
+                    console.print(f"    • {s}", style="yellow")
+                console.print("")
+            else:
+                console.print(
+                    f"⚠ Branch '{branch}' does not exist on the remote.",
+                    style="yellow",
+                )
+            if not _confirm_or_fail(
+                f"Create '{branch}' as a new branch from the default branch?", yes
+            ):
+                console.print("Cancelled", style="yellow")
+                sys.exit(0)
 
         # Create worktree
         console.print(f"✓ Creating worktree: {str(worktree_path)}", style="cyan")

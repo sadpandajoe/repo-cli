@@ -16,8 +16,10 @@ from repo_cli.git_ops import (
     clone_bare,
     create_worktree,
     fetch_repo,
+    find_similar_branches,
     get_default_branch,
     init_submodules,
+    list_remote_branches,
     rebase_onto,
     remove_worktree,
 )
@@ -321,6 +323,112 @@ class TestBranchExists:
 
         assert result is False
         assert mock_run.call_count == 2
+
+
+class TestListRemoteBranches:
+    """Tests for list_remote_branches function."""
+
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_lists_branches(self, mock_run):
+        """Should return branch names without prefix."""
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout="main\nfeat-abc\nfix/bug-123\n",
+        )
+
+        result = list_remote_branches(Path("/tmp/repo.git"))
+
+        assert result == ["main", "feat-abc", "fix/bug-123"]
+
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_filters_out_head(self, mock_run):
+        """Should exclude HEAD from the list."""
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout="HEAD\nmain\ndev\n",
+        )
+
+        result = list_remote_branches(Path("/tmp/repo.git"))
+
+        assert result == ["main", "dev"]
+
+    @patch("repo_cli.git_ops.subprocess.run")
+    def test_returns_empty_on_error(self, mock_run):
+        """Should return empty list when git command fails."""
+        mock_run.side_effect = subprocess.CalledProcessError(1, ["git"])
+
+        result = list_remote_branches(Path("/tmp/repo.git"))
+
+        assert result == []
+
+
+class TestFindSimilarBranches:
+    """Tests for find_similar_branches function."""
+
+    @patch("repo_cli.git_ops.list_remote_branches")
+    def test_finds_typo_match(self, mock_list):
+        """Should find branch with typo (the original bug scenario)."""
+        mock_list.return_value = [
+            "main",
+            "feat-playwright-ci-integratoin",
+            "archived/playwright-test",
+            "fix/unrelated",
+        ]
+
+        result = find_similar_branches(Path("/tmp/repo.git"), "feat-playwright-ci-integration")
+
+        assert "feat-playwright-ci-integratoin" in result
+
+    @patch("repo_cli.git_ops.list_remote_branches")
+    def test_finds_substring_match(self, mock_list):
+        """Should find branches where query is a substring."""
+        mock_list.return_value = ["main", "feat-auth", "feat-auth-v2", "fix/login"]
+
+        result = find_similar_branches(Path("/tmp/repo.git"), "feat-auth")
+
+        assert "feat-auth-v2" in result
+
+    @patch("repo_cli.git_ops.list_remote_branches")
+    def test_finds_token_overlap(self, mock_list):
+        """Should find branches with significant token overlap."""
+        mock_list.return_value = [
+            "main",
+            "feat-playwright-test",
+            "feat-playwright-ci",
+            "fix/unrelated-thing",
+        ]
+
+        result = find_similar_branches(Path("/tmp/repo.git"), "feat-playwright-ci-integration")
+
+        assert "feat-playwright-ci" in result
+        assert "feat-playwright-test" in result
+
+    @patch("repo_cli.git_ops.list_remote_branches")
+    def test_returns_empty_for_no_matches(self, mock_list):
+        """Should return empty list when no branches are similar."""
+        mock_list.return_value = ["main", "develop", "release/1.0"]
+
+        result = find_similar_branches(Path("/tmp/repo.git"), "feat-totally-unique-xyz")
+
+        assert result == []
+
+    @patch("repo_cli.git_ops.list_remote_branches")
+    def test_respects_max_results(self, mock_list):
+        """Should limit results to max_results."""
+        mock_list.return_value = [f"feat-auth-{i}" for i in range(20)]
+
+        result = find_similar_branches(Path("/tmp/repo.git"), "feat-auth", max_results=3)
+
+        assert len(result) <= 3
+
+    @patch("repo_cli.git_ops.list_remote_branches")
+    def test_returns_empty_when_no_branches(self, mock_list):
+        """Should handle empty branch list gracefully."""
+        mock_list.return_value = []
+
+        result = find_similar_branches(Path("/tmp/repo.git"), "anything")
+
+        assert result == []
 
 
 class TestCreateWorktree:
