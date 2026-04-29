@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **`repo unregister`** - Inverse of `repo register`. Removes a repo alias from config with confirmation and shell-completion on the alias.
+  - Refuses by default if active worktrees exist; `--force` also drops their config entries
+  - `--remove-data` deletes on-disk data (bare repo + worktree directories) for both the nested layout (`<base_dir>/<alias>/.bare`) and pre-0.2.0 flat layout (`<base_dir>/<alias>.git` and `<base_dir>/<alias>-<branch>`)
+  - Interactive flow without `--remove-data` offers to delete on-disk data inline (no need to re-run after the alias is gone)
+  - Ownership-gated: refuses to delete `<base_dir>/<alias>` directories that don't contain a `.bare` marker
+  - Warns when shell CWD is inside a directory being deleted, with a `cd` hint
+  - Path traversal hardened via `validate_repo_alias` + `validate_path_safety` defense-in-depth
+- **`repo doctor` orphan detection** - New check 6 scans `<base_dir>` for repo directories (nested `.bare` and legacy `*.git`) whose alias isn't in the config, so leftover data after `unregister` (or manual moves) is discoverable.
+
+### Testing
+- **20 new tests** covering `unregister` (15) and `doctor` orphan detection (2), plus updates to existing doctor tests
+
 ## [0.1.6] - 2026-03-25
 
 ### Fixed
