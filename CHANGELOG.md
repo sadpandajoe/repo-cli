@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-04-29
+
 ### Added
 - **`repo unregister`** - Inverse of `repo register`. Removes a repo alias from config with confirmation and shell-completion on the alias.
   - Refuses by default if active worktrees exist; `--force` also drops their config entries
@@ -16,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Warns when shell CWD is inside a directory being deleted, with a `cd` hint
   - Path traversal hardened via `validate_repo_alias` + `validate_path_safety` defense-in-depth
 - **`repo doctor` orphan detection** - New check 6 scans `<base_dir>` for repo directories (nested `.bare` and legacy `*.git`) whose alias isn't in the config, so leftover data after `unregister` (or manual moves) is discoverable.
+
+### Fixed
+- **Branch-existence prompts on `repo create`** - When the requested branch doesn't exist on the remote, `repo create` now warns, suggests similar names ("Did you mean?"), and asks for confirmation before creating it from `origin/HEAD`. When the branch already exists on the remote, it shows the last commit and age and offers options to use it, enter a different name, or cancel.
+- **Python 3.14 compatibility** - Renamed the internal `list` command function so it no longer shadows the `list` builtin. PEP 649 deferred annotation evaluation in 3.14 caused `TypeError: 'function' object is not subscriptable` on every CLI invocation.
 
 ### Testing
 - **20 new tests** covering `unregister` (15) and `doctor` orphan detection (2), plus updates to existing doctor tests
