@@ -2,12 +2,14 @@
 
 import contextlib
 import platform
+import shutil
 import subprocess
 import sys
 import webbrowser
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated
+from urllib.parse import quote
 
 import typer
 from rich.console import Console
@@ -258,6 +260,172 @@ def register(
     except FileNotFoundError:
         console.print("✗ Error: Config not found. Run 'repo init' first", style="red")
         sys.exit(1)
+    except Exception as e:
+        console.print(f"✗ Error: {e}", style="red")
+        sys.exit(1)
+
+
+def _collect_owned_paths(
+    base_dir: Path, alias: str, branches: list[str]
+) -> tuple[list[Path], bool]:
+    """Collect on-disk paths that repo-cli owns for this alias.
+
+    Two supported layouts:
+      • Nested (0.2.0+):  base_dir/<alias>/.bare
+      • Legacy flat:      base_dir/<alias>.git  and  base_dir/<alias>-<safe_branch>
+
+    Only paths we positively recognize are eligible for deletion — a bare
+    base_dir/<alias> directory without a .bare child is treated as an unrelated
+    user directory and surfaced via the returned `unmanaged_nested` flag.
+
+    Returns (owned_paths, unmanaged_nested).
+    """
+    nested_dir = base_dir / alias
+    is_nested_layout = (nested_dir / ".bare").exists()
+    unmanaged_nested = nested_dir.exists() and not is_nested_layout
+
+    owned_paths: list[Path] = []
+    if is_nested_layout:
+        owned_paths.append(nested_dir)
+    flat_bare = base_dir / f"{alias}.git"
+    if flat_bare.exists():
+        owned_paths.append(flat_bare)
+    for branch in branches:
+        flat_wt = base_dir / f"{alias}-{quote(branch, safe='')}"
+        if flat_wt.exists():
+            owned_paths.append(flat_wt)
+
+    return owned_paths, unmanaged_nested
+
+
+def _warn_unmanaged_dir(path: Path) -> None:
+    console.print(
+        f"⚠ '{path}' is not repo-cli-managed (no .bare inside); leaving untouched",
+        style="yellow",
+    )
+
+
+def _remove_owned_paths(owned_paths: list[Path], base_dir: Path, yes: bool) -> None:
+    """Prompt, then rmtree each path. Emits a cd hint if shell CWD is inside."""
+    try:
+        cwd = Path.cwd()
+        cwd_inside = any(cwd == p or p in cwd.parents for p in owned_paths)
+    except OSError:
+        cwd_inside = False
+
+    listing = "\n  ".join(str(p) for p in owned_paths)
+    if not _confirm_or_fail(f"Delete the following repo-cli data?\n  {listing}", yes):
+        console.print("ℹ Data kept on disk", style="yellow")
+        return
+
+    for path in owned_paths:
+        # Defense-in-depth: refuse to rmtree anything outside base_dir
+        utils.validate_path_safety(path, base_dir)
+        shutil.rmtree(path)
+        console.print(f"✓ Deleted {path}", style="green")
+    if cwd_inside:
+        console.print(
+            f"⚠ Shell is still in a deleted directory. Run:  cd {base_dir}",
+            style="yellow",
+        )
+
+
+@app.command()
+def unregister(
+    alias: Annotated[str, typer.Argument(autocompletion=complete_repo)],
+    force: Annotated[
+        bool,
+        typer.Option("--force", help="Unregister even if worktrees exist (removes config entries)"),
+    ] = False,
+    remove_data: Annotated[
+        bool,
+        typer.Option("--remove-data", help="Also delete the bare repo and worktree directories"),
+    ] = False,
+    yes: Annotated[bool, typer.Option("--yes", "-y", help="Auto-accept confirmations")] = False,
+):
+    """Unregister a repository alias."""
+    try:
+        # Validate alias name to prevent path traversal via tampered config
+        utils.validate_repo_alias(alias)
+
+        try:
+            cfg = config.load_config()
+        except FileNotFoundError:
+            console.print("✗ Error: Config not found. Run 'repo init' first", style="red")
+            sys.exit(1)
+
+        if alias not in cfg.get("repos", {}):
+            console.print(f"✗ Error: Alias '{alias}' not registered", style="red")
+            sys.exit(1)
+
+        # Find active worktrees for this repo
+        active_worktrees = [k for k in cfg.get("worktrees", {}) if k.startswith(f"{alias}::")]
+
+        if active_worktrees and not force:
+            count = len(active_worktrees)
+            console.print(f"✗ Error: '{alias}' has {count} active worktree(s):", style="red")
+            for key in active_worktrees:
+                branch = key.split("::", 1)[1]
+                console.print(f"  • {branch}", style="yellow")
+            console.print(
+                "ℹ Delete worktrees first with 'repo delete', or use --force to remove anyway",
+                style="yellow",
+            )
+            sys.exit(1)
+
+        url = cfg["repos"][alias]["url"]
+
+        if not _confirm_or_fail(f"Unregister '{alias}' ({url})?", yes):
+            console.print("Cancelled", style="yellow")
+            return
+
+        # Capture branches before deleting worktree entries — needed for legacy
+        # flat-layout cleanup (base_dir/<alias>-<safe_branch>).
+        captured_branches = [key.split("::", 1)[1] for key in active_worktrees]
+
+        # Remove worktree config entries when forcing past active worktrees
+        if active_worktrees:
+            for key in active_worktrees:
+                del cfg["worktrees"][key]
+            count = len(active_worktrees)
+            noun = "entry" if count == 1 else "entries"
+            console.print(f"⚠ Removed {count} worktree config {noun}", style="yellow")
+
+        del cfg["repos"][alias]
+        config.save_config(cfg)
+        console.print(f"✓ Unregistered '{alias}'", style="green")
+
+        # Reconcile on-disk data
+        base_dir = utils.expand_path(cfg["base_dir"])
+        owned_paths, unmanaged_nested = _collect_owned_paths(base_dir, alias, captured_branches)
+        nested_dir = base_dir / alias
+
+        if remove_data:
+            if owned_paths:
+                _remove_owned_paths(owned_paths, base_dir, yes)
+            elif unmanaged_nested:
+                _warn_unmanaged_dir(nested_dir)
+            else:
+                console.print(f"ℹ No repo-cli data found for '{alias}'", style="yellow")
+        elif owned_paths:
+            # --remove-data was not passed. In interactive mode we can still offer
+            # to clean up — the user can't easily re-run with --remove-data because
+            # the alias is now gone from config. In non-interactive mode (or with
+            # --yes, which we don't auto-escalate to a destructive action) just
+            # surface the orphaned paths so the user can clean them up manually.
+            if not yes and _is_interactive():
+                _remove_owned_paths(owned_paths, base_dir, yes=False)
+            else:
+                console.print("ℹ Repo-cli data still on disk:", style="yellow")
+                for path in owned_paths:
+                    console.print(f"  • {path}", style="yellow")
+                console.print(
+                    "ℹ Run `repo doctor` to list orphans, or `rm -rf` to remove",
+                    style="yellow",
+                )
+        elif unmanaged_nested:
+            _warn_unmanaged_dir(nested_dir)
+
     except Exception as e:
         console.print(f"✗ Error: {e}", style="red")
         sys.exit(1)
@@ -1270,6 +1438,50 @@ def doctor():
     except Exception as e:
         console.print(f"   ✗ Error checking dependencies: {e}", style="red")
         all_checks_passed = False
+
+    # Check 6: Orphaned on-disk data
+    console.print("[bold]6. Checking for orphaned data...[/bold]")
+    try:
+        cfg = config.load_config()
+        base_dir = utils.expand_path(cfg["base_dir"])
+        registered = set(cfg.get("repos", {}).keys())
+        orphans: list[Path] = []
+        if base_dir.is_dir():
+            for entry in sorted(base_dir.iterdir()):
+                if not entry.is_dir():
+                    continue
+                # Nested layout: base_dir/<alias>/.bare
+                if (entry / ".bare").exists():
+                    if entry.name not in registered:
+                        orphans.append(entry)
+                    continue
+                # Legacy flat bare: base_dir/<alias>.git
+                if entry.name.endswith(".git"):
+                    alias = entry.name[: -len(".git")]
+                    if alias not in registered:
+                        orphans.append(entry)
+
+        if orphans:
+            console.print(
+                f"   ⚠ Found {len(orphans)} orphaned repo director"
+                f"{'y' if len(orphans) == 1 else 'ies'} "
+                "(on disk but not registered):",
+                style="yellow",
+            )
+            for path in orphans:
+                console.print(f"     • {path}", style="yellow")
+            console.print(
+                "   ℹ Re-register with `repo register <alias> <url>` to adopt, "
+                "or `rm -rf` to discard",
+                style="yellow",
+            )
+        else:
+            console.print("   ✓ No orphaned data", style="green")
+    except FileNotFoundError:
+        # Config-not-found already reported by Check 3
+        console.print("   • Skipped (no config)", style="cyan")
+    except Exception as e:
+        console.print(f"   ⚠ Orphan check failed: {e}", style="yellow")
 
     # Summary
     console.print()

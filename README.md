@@ -105,7 +105,7 @@ repo doctor
 All MVP commands are implemented and tested. Ready for production use.
 
 ### Features
-- ✅ All core commands (init, register, create, list, delete, activate, pr link)
+- ✅ All core commands (init, register, unregister, create, list, delete, activate, pr link)
 - ✅ Diagnostic tools (--version, doctor, upgrade-check)
 - ✅ Automatic upgrades (upgrade command with safety checks)
 - ✅ Shell auto-complete for repos and branches
@@ -156,6 +156,10 @@ repo pr link myrepo feature-123 4567
 
 # Delete a worktree
 repo delete myrepo feature-123
+
+# Unregister a repository alias (errors if worktrees exist; --force overrides)
+repo unregister myrepo
+repo unregister myrepo --force --remove-data --yes
 ```
 
 ### Shell Integration
@@ -221,6 +225,45 @@ repo register my/repo ...     # Error: slashes not allowed
 repo register ../prod ...     # Error: path traversal blocked
 repo register repo::name ...  # Error: :: is internal delimiter
 ```
+
+## Unregistering a Repository
+
+Use `repo unregister` to remove a repo alias from your config. It is the inverse of `repo register`.
+
+```bash
+# Unregister an alias with no active worktrees (interactive confirmation)
+repo unregister myrepo
+
+# Skip the confirmation prompt
+repo unregister myrepo --yes
+```
+
+By default, `unregister` refuses to remove an alias that still has worktrees. Delete the worktrees first with `repo delete`, or pass `--force` to also remove their config entries:
+
+```bash
+# Drop config entries for any remaining worktrees too
+repo unregister myrepo --force --yes
+```
+
+`--force` only updates the config. The bare repo and worktree directories on disk are left intact unless you also pass `--remove-data`:
+
+```bash
+# Also rmtree the on-disk bare repo and worktree directories
+repo unregister myrepo --force --remove-data --yes
+```
+
+`--remove-data` only deletes paths it positively recognizes as repo-cli-managed:
+
+- nested layout (v0.2.0+): `<base_dir>/<alias>/.bare`
+- legacy flat layout: `<base_dir>/<alias>.git` and `<base_dir>/<alias>-<branch>`
+
+A directory at `<base_dir>/<alias>` without a `.bare` child is treated as unrelated user data and left untouched, with a warning.
+
+In an interactive shell, `repo unregister` will also offer to delete on-disk data if you didn't pass `--remove-data` — answer `y` at the follow-up prompt. With `--yes` (or in a non-interactive context), data is left on disk if `--remove-data` wasn't explicitly passed; run `repo doctor` to surface orphaned directories or `rm -rf` them manually.
+
+### Finding Orphaned Data
+
+`repo doctor` scans `<base_dir>` for repo directories whose alias isn't registered (e.g. left behind after `repo unregister` without `--remove-data`, or moved manually) and lists them so you can adopt them with `repo register` or remove them with `rm -rf`.
 
 ## Known Limitations
 

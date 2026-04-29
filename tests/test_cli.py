@@ -146,6 +146,315 @@ class TestCliRegister:
         assert cfg["repos"]["test"]["url"] == "git@github.com:owner/other.git"
 
 
+class TestCliUnregister:
+    """Integration tests for repo unregister command."""
+
+    def _init_and_register(self, tmp_path, monkeypatch, alias="myrepo"):
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        base_dir = tmp_path / "code"
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+        runner.invoke(app, ["init", "--base-dir", str(base_dir)])
+        runner.invoke(app, ["register", alias, "git@github.com:owner/repo.git"])
+        return base_dir
+
+    def test_unregister_success(self, tmp_path, monkeypatch):
+        """Should remove a registered alias from config."""
+        self._init_and_register(tmp_path, monkeypatch)
+
+        result = runner.invoke(app, ["unregister", "myrepo", "--yes"])
+
+        assert result.exit_code == 0
+        assert "Unregistered 'myrepo'" in result.stdout
+        cfg = config.load_config()
+        assert "myrepo" not in cfg.get("repos", {})
+
+    def test_unregister_unknown_alias_fails(self, tmp_path, monkeypatch):
+        """Should fail when alias is not registered."""
+        self._init_and_register(tmp_path, monkeypatch)
+
+        result = runner.invoke(app, ["unregister", "nope", "--yes"])
+
+        assert result.exit_code == 1
+        assert "not registered" in result.stdout
+
+    def test_unregister_blocked_by_active_worktrees(self, tmp_path, monkeypatch):
+        """Should refuse to unregister when worktrees exist."""
+        self._init_and_register(tmp_path, monkeypatch)
+        # Inject a worktree entry
+        cfg = config.load_config()
+        cfg["worktrees"]["myrepo::main"] = {"repo": "myrepo", "branch": "main", "pr": None}
+        config.save_config(cfg)
+
+        result = runner.invoke(app, ["unregister", "myrepo", "--yes"])
+
+        assert result.exit_code == 1
+        assert "active worktree" in result.stdout
+        assert "main" in result.stdout
+        assert "--force" in result.stdout
+
+    def test_unregister_remove_data_blocked_by_active_worktrees_without_force(
+        self, tmp_path, monkeypatch
+    ):
+        """--remove-data must not short-circuit the active-worktree guard."""
+        base_dir = self._init_and_register(tmp_path, monkeypatch)
+        cfg = config.load_config()
+        cfg["worktrees"]["myrepo::main"] = {"repo": "myrepo", "branch": "main", "pr": None}
+        config.save_config(cfg)
+        repo_dir = base_dir / "myrepo"
+        (repo_dir / ".bare").mkdir(parents=True)
+
+        result = runner.invoke(app, ["unregister", "myrepo", "--remove-data", "--yes"])
+
+        assert result.exit_code == 1
+        assert "active worktree" in result.stdout
+        # Alias must remain registered and on-disk data untouched
+        cfg = config.load_config()
+        assert "myrepo" in cfg.get("repos", {})
+        assert repo_dir.exists()
+        assert (repo_dir / ".bare").exists()
+
+    def test_unregister_force_removes_worktree_config_entries(self, tmp_path, monkeypatch):
+        """Should remove worktree config entries when --force is used."""
+        self._init_and_register(tmp_path, monkeypatch)
+        cfg = config.load_config()
+        cfg["worktrees"]["myrepo::main"] = {"repo": "myrepo", "branch": "main", "pr": None}
+        cfg["worktrees"]["myrepo::feature"] = {"repo": "myrepo", "branch": "feature", "pr": None}
+        config.save_config(cfg)
+
+        result = runner.invoke(app, ["unregister", "myrepo", "--force", "--yes"])
+
+        assert result.exit_code == 0
+        assert "Unregistered 'myrepo'" in result.stdout
+        cfg = config.load_config()
+        assert "myrepo" not in cfg.get("repos", {})
+        assert not any(k.startswith("myrepo::") for k in cfg.get("worktrees", {}))
+
+    def test_unregister_remove_data_deletes_directory(self, tmp_path, monkeypatch):
+        """Should delete repo directory from disk when --remove-data is used."""
+        base_dir = self._init_and_register(tmp_path, monkeypatch)
+        repo_dir = base_dir / "myrepo"
+        repo_dir.mkdir(parents=True)
+        (repo_dir / ".bare").mkdir()
+
+        result = runner.invoke(app, ["unregister", "myrepo", "--remove-data", "--yes"])
+
+        assert result.exit_code == 0
+        assert "Deleted" in result.stdout
+        assert not repo_dir.exists()
+
+    def test_unregister_warns_data_remains_without_remove_data(self, tmp_path, monkeypatch):
+        """Non-interactive (--yes) without --remove-data should surface orphans."""
+        base_dir = self._init_and_register(tmp_path, monkeypatch)
+        repo_dir = base_dir / "myrepo"
+        repo_dir.mkdir(parents=True)
+        (repo_dir / ".bare").mkdir()
+
+        result = runner.invoke(app, ["unregister", "myrepo", "--yes"])
+
+        assert result.exit_code == 0
+        assert "Unregistered 'myrepo'" in result.stdout
+        assert "still on disk" in result.stdout
+        # New: --yes should NOT auto-escalate to deletion (no --remove-data passed).
+        # Data must remain on disk.
+        assert repo_dir.exists()
+        assert (repo_dir / ".bare").exists()
+        # Recovery hint mentions doctor + manual removal
+        assert "doctor" in result.stdout
+
+    def test_unregister_interactive_offers_data_deletion(self, tmp_path, monkeypatch):
+        """Interactive flow without --remove-data should prompt to delete on-disk data."""
+        base_dir = self._init_and_register(tmp_path, monkeypatch)
+        repo_dir = base_dir / "myrepo"
+        (repo_dir / ".bare").mkdir(parents=True)
+
+        # First confirm (unregister) accepts; second (delete data) accepts.
+        responses = iter([True, True])
+        monkeypatch.setattr("typer.confirm", lambda *a, **k: next(responses))
+        monkeypatch.setattr("repo_cli.main._is_interactive", lambda: True)
+
+        result = runner.invoke(app, ["unregister", "myrepo"])
+
+        assert result.exit_code == 0
+        assert "Unregistered 'myrepo'" in result.stdout
+        # Data deleted in the same flow
+        assert not repo_dir.exists()
+
+    def test_unregister_interactive_decline_keeps_data(self, tmp_path, monkeypatch):
+        """Interactive: declining the data-deletion prompt leaves data intact."""
+        base_dir = self._init_and_register(tmp_path, monkeypatch)
+        repo_dir = base_dir / "myrepo"
+        (repo_dir / ".bare").mkdir(parents=True)
+
+        # First confirm (unregister) accepts; second (delete data) declines.
+        responses = iter([True, False])
+        monkeypatch.setattr("typer.confirm", lambda *a, **k: next(responses))
+        monkeypatch.setattr("repo_cli.main._is_interactive", lambda: True)
+
+        result = runner.invoke(app, ["unregister", "myrepo"])
+
+        assert result.exit_code == 0
+        assert "Unregistered 'myrepo'" in result.stdout
+        assert "Data kept on disk" in result.stdout
+        assert repo_dir.exists()
+        assert (repo_dir / ".bare").exists()
+
+    def test_unregister_remove_data_refuses_unknown_directory(self, tmp_path, monkeypatch):
+        """Should refuse to delete directory that is not repo-cli-managed (no .bare)."""
+        base_dir = self._init_and_register(tmp_path, monkeypatch)
+        # Unrelated user directory at base_dir/myrepo — no .bare inside
+        repo_dir = base_dir / "myrepo"
+        repo_dir.mkdir(parents=True)
+        (repo_dir / "important.txt").write_text("keep me")
+
+        result = runner.invoke(app, ["unregister", "myrepo", "--remove-data", "--yes"])
+
+        assert result.exit_code == 0
+        assert "Unregistered 'myrepo'" in result.stdout
+        # Must not delete an unowned directory
+        assert repo_dir.exists()
+        assert (repo_dir / "important.txt").exists()
+        assert "not repo-cli-managed" in result.stdout
+
+    def test_unregister_remove_data_deletes_legacy_flat_layout(self, tmp_path, monkeypatch):
+        """Should clean up pre-0.2.0 flat layout (base_dir/<alias>.git and <alias>-<branch>)."""
+        base_dir = self._init_and_register(tmp_path, monkeypatch)
+        # Simulate flat-layout leftovers (migration skipped due to nested-dir collision)
+        flat_bare = base_dir / "myrepo.git"
+        flat_bare.mkdir(parents=True)
+        (flat_bare / "HEAD").write_text("ref: refs/heads/main\n")
+        flat_wt = base_dir / "myrepo-main"
+        flat_wt.mkdir()
+        (flat_wt / "file").write_text("x")
+
+        # Inject a worktree entry so --force captures the branch for flat cleanup
+        cfg = config.load_config()
+        cfg["worktrees"]["myrepo::main"] = {"repo": "myrepo", "branch": "main", "pr": None}
+        config.save_config(cfg)
+
+        result = runner.invoke(app, ["unregister", "myrepo", "--force", "--remove-data", "--yes"])
+
+        assert result.exit_code == 0
+        assert not flat_bare.exists()
+        assert not flat_wt.exists()
+
+    def test_unregister_declined_confirmation_keeps_data(self, tmp_path, monkeypatch):
+        """Declining the delete prompt should leave on-disk data intact."""
+        base_dir = self._init_and_register(tmp_path, monkeypatch)
+        repo_dir = base_dir / "myrepo"
+        (repo_dir / ".bare").mkdir(parents=True)
+        (repo_dir / ".bare" / "HEAD").write_text("ref: refs/heads/main\n")
+
+        # Decline the delete confirmation (no --yes); first confirm (unregister) accepts,
+        # second (delete data) declines.
+        responses = iter([True, False])
+        monkeypatch.setattr("typer.confirm", lambda *a, **k: next(responses))
+        # typer.confirm only runs in TTY; force interactive detection
+        monkeypatch.setattr("repo_cli.main._is_interactive", lambda: True)
+
+        result = runner.invoke(app, ["unregister", "myrepo", "--remove-data"])
+
+        assert result.exit_code == 0
+        assert "Unregistered 'myrepo'" in result.stdout
+        assert "Data kept on disk" in result.stdout
+        assert repo_dir.exists()
+        assert (repo_dir / ".bare").exists()
+
+    def test_unregister_remove_data_deletes_mixed_nested_and_flat_layout(
+        self, tmp_path, monkeypatch
+    ):
+        """Mixed state (nested dir + flat bare + flat worktree) should all be cleaned."""
+        base_dir = self._init_and_register(tmp_path, monkeypatch)
+        # Nested side
+        nested_dir = base_dir / "myrepo"
+        (nested_dir / ".bare").mkdir(parents=True)
+        # Flat side
+        flat_bare = base_dir / "myrepo.git"
+        flat_bare.mkdir()
+        flat_wt = base_dir / "myrepo-main"
+        flat_wt.mkdir()
+
+        cfg = config.load_config()
+        cfg["worktrees"]["myrepo::main"] = {"repo": "myrepo", "branch": "main", "pr": None}
+        config.save_config(cfg)
+
+        result = runner.invoke(app, ["unregister", "myrepo", "--force", "--remove-data", "--yes"])
+
+        assert result.exit_code == 0
+        assert not nested_dir.exists()
+        assert not flat_bare.exists()
+        assert not flat_wt.exists()
+
+    def test_unregister_remove_data_warns_when_cwd_inside(self, tmp_path, monkeypatch):
+        """Should emit a cd hint when shell CWD is inside the directory being deleted."""
+        base_dir = self._init_and_register(tmp_path, monkeypatch)
+        repo_dir = base_dir / "myrepo"
+        (repo_dir / ".bare").mkdir(parents=True)
+
+        monkeypatch.chdir(repo_dir)
+
+        result = runner.invoke(app, ["unregister", "myrepo", "--remove-data", "--yes"])
+
+        assert result.exit_code == 0
+        assert not repo_dir.exists()
+        assert "Shell is still in a deleted directory" in result.stdout
+        # Path match skipped: Rich hard-wraps long tmp_path strings in captured
+        # output. Same limitation as test_delete_warns_when_cwd_inside_worktree.
+        assert "Run:" in result.stdout and "cd" in result.stdout
+
+    def test_unregister_remove_data_flat_layout_encodes_slash_branches(self, tmp_path, monkeypatch):
+        """Flat-layout cleanup should percent-encode branches with slashes (e.g. feat/x)."""
+        base_dir = self._init_and_register(tmp_path, monkeypatch)
+        flat_bare = base_dir / "myrepo.git"
+        flat_bare.mkdir(parents=True)
+        # Branch "feat/x" → dir "myrepo-feat%2Fx" per utils.get_worktree_path encoding
+        flat_wt = base_dir / "myrepo-feat%2Fx"
+        flat_wt.mkdir()
+
+        cfg = config.load_config()
+        cfg["worktrees"]["myrepo::feat/x"] = {"repo": "myrepo", "branch": "feat/x", "pr": None}
+        config.save_config(cfg)
+
+        result = runner.invoke(app, ["unregister", "myrepo", "--force", "--remove-data", "--yes"])
+
+        assert result.exit_code == 0
+        assert not flat_bare.exists()
+        assert not flat_wt.exists()
+
+    def test_unregister_rejects_path_traversal_alias(self, tmp_path, monkeypatch):
+        """Should reject aliases that could escape base_dir via path traversal."""
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        base_dir = tmp_path / "code"
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+        runner.invoke(app, ["init", "--base-dir", str(base_dir)])
+
+        # Inject a tampered alias directly into config (register would have blocked it)
+        cfg = config.load_config()
+        cfg["repos"]["../victim"] = {"url": "x", "owner_repo": None}
+        config.save_config(cfg)
+
+        # A sibling directory that must NOT be deleted
+        victim = tmp_path / "victim"
+        victim.mkdir()
+        (victim / "important.txt").write_text("keep me")
+
+        result = runner.invoke(app, ["unregister", "../victim", "--remove-data", "--yes"])
+
+        assert result.exit_code == 1
+        assert "Invalid repo alias" in result.stdout
+        assert victim.exists()
+        assert (victim / "important.txt").exists()
+
+    def test_unregister_no_config_fails(self, tmp_path, monkeypatch):
+        """Should fail gracefully when config does not exist."""
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+
+        result = runner.invoke(app, ["unregister", "myrepo", "--yes"])
+
+        assert result.exit_code == 1
+        assert "Config not found" in result.stdout
+
+
 class TestCliCreate:
     """Integration tests for repo create command."""
 
@@ -1644,6 +1953,64 @@ class TestCliDoctor:
         assert result.exit_code == 0
         assert "repo-cli Doctor" in result.stdout
         assert "Checking Git version" in result.stdout
+
+    def test_doctor_detects_orphaned_repos(self, tmp_path, monkeypatch):
+        """Should list nested + flat-layout repo dirs whose alias isn't registered."""
+        # Widen the terminal so Rich doesn't hard-wrap CI's long tmp paths
+        # (e.g. /tmp/pytest-of-runner/pytest-0/test_..._r0/code/ghost-flat.git),
+        # which would split the alias mid-token in result.stdout.
+        monkeypatch.setenv("COLUMNS", "300")
+
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        base_dir = tmp_path / "code"
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+
+        # One registered repo, plus orphans of both layouts and an unrelated dir
+        cfg = {
+            "base_dir": str(base_dir),
+            "repos": {"keepme": {"url": "x", "owner_repo": None}},
+            "worktrees": {},
+        }
+        config.save_config(cfg)
+        base_dir.mkdir(parents=True)
+        (base_dir / "keepme" / ".bare").mkdir(parents=True)  # registered, not orphan
+        (base_dir / "ghost-nested" / ".bare").mkdir(parents=True)  # orphan, nested
+        (base_dir / "ghost-flat.git").mkdir()  # orphan, legacy flat
+        (base_dir / "random-user-dir").mkdir()  # not a repo, ignored
+
+        result = runner.invoke(app, ["doctor"])
+
+        # Rich hard-wraps long tmp paths in CliRunner output — flatten whitespace
+        # before substring matching (CI paths are longer than local tmp_path).
+        flat = " ".join(result.stdout.split())
+
+        assert result.exit_code == 0
+        assert "Checking for orphaned data" in flat
+        assert "ghost-nested" in flat
+        assert "ghost-flat.git" in flat
+        assert "keepme" not in flat.split("orphaned")[1]  # not in orphan list
+        assert "random-user-dir" not in flat
+        assert "Found 2 orphaned" in flat
+
+    def test_doctor_no_orphans_when_all_registered(self, tmp_path, monkeypatch):
+        """Should report no orphans when every on-disk repo is registered."""
+        config_file = tmp_path / ".repo-cli" / "config.yaml"
+        base_dir = tmp_path / "code"
+        monkeypatch.setattr("repo_cli.config.get_config_path", lambda: config_file)
+
+        cfg = {
+            "base_dir": str(base_dir),
+            "repos": {"alpha": {"url": "x", "owner_repo": None}},
+            "worktrees": {},
+        }
+        config.save_config(cfg)
+        base_dir.mkdir(parents=True)
+        (base_dir / "alpha" / ".bare").mkdir(parents=True)
+
+        result = runner.invoke(app, ["doctor"])
+
+        assert result.exit_code == 0
+        assert "No orphaned data" in result.stdout
 
     def test_doctor_without_config(self, tmp_path, monkeypatch):
         """Should still run checks even without config."""
